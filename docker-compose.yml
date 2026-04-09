@@ -39,7 +39,7 @@ services:
 
   worker:
     build: .
-    command: celery -A app.tasks worker --loglevel=INFO --concurrency=${MAX_CONCURRENT_IMAGE_GENERATIONS:-5}
+    command: celery -A app.tasks worker --loglevel=INFO --pool=solo --concurrency=1
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
