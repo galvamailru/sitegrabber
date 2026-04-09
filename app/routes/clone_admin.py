@@ -25,7 +25,11 @@ templates = Jinja2Templates(directory="templates")
 @router.get("/admin", response_class=HTMLResponse)
 async def admin_dashboard(request: Request, db: AsyncSession = Depends(get_db)):
     projects = (await db.execute(select(SiteProject).order_by(desc(SiteProject.created_at)))).scalars().all()
-    return templates.TemplateResponse("admin/dashboard.html", {"request": request, "projects": projects})
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/dashboard.html",
+        context={"request": request, "projects": projects},
+    )
 
 
 @router.post("/admin/projects")
@@ -142,8 +146,9 @@ async def project_details(project_id: UUID, request: Request, db: AsyncSession =
         )
     ).scalars().all()
     return templates.TemplateResponse(
-        "admin/project.html",
-        {
+        request=request,
+        name="admin/project.html",
+        context={
             "request": request,
             "project": project,
             "pages_count": pages_count or 0,
