@@ -1,10 +1,15 @@
-# AI Chatbot
+# AI Chatbot + Site Clone Platform
 
-Сервер с AI-агентом в виде чата, встраиваемый в HTML через iframe. Реализация по [04-execution-spec.md](aichatbot_prompt/04-execution-spec.md).
+Проект теперь включает две подсистемы:
 
-- **Стек:** Python 3.11+, FastAPI, PostgreSQL, Docker/docker-compose, LLM DeepSeek (HTTP API).
-- **API:** POST `/api/chat` (JSON: `user_id`, `message`, опционально `dialog_id`) → ответ SSE со стримом ответа LLM.
-- **Конфигурация:** только из `.env` (см. `.env.example`). Промпт LLM — из файла (путь в `PROMPT_FILE_PATH`).
+- **AI Chatbot** (историческая часть): API чата `/api/chat`.
+- **Site Clone Platform**: рекурсивный парсинг каталогов, сохранение структуры в БД, рерайтинг, генерация изображений и публикация копии сайта.
+
+## Основные URL
+
+- Админка: `http://localhost:8080/admin`
+- Публичный опубликованный сайт: `http://localhost:8080/`
+- Старый чат API: `http://localhost:8080/api/chat`
 
 ## Быстрый старт
 
@@ -13,8 +18,7 @@
    ```bash
    docker-compose up --build
    ```
-   Приложение: http://localhost:8000  
-   Страница чата для iframe: http://localhost:8000/static/index.html (или http://localhost:8000/ с редиректом).
+   Внешний вход через Nginx: http://localhost:8080
 
 3. Локально (без Docker):
    ```bash
@@ -31,9 +35,21 @@ pip install -r requirements.txt
 pytest tests -v
 ```
 
-## Структура
+## Site Clone: сценарий
 
-- `app/` — FastAPI-приложение, маршруты, БД, клиент LLM.
-- `prompts/system.txt` — системный промпт (путь настраивается в `.env`).
-- `static/index.html` — страница чата для встраивания в iframe (форма + приём SSE).
-- `alembic/` — миграции БД.
+1. Открыть `/admin`.
+2. Создать проект клонирования (URL, глубина, промпты).
+3. Запустить `Клонировать` (Celery task `crawl_site_task`).
+4. Опционально запустить `Рерайтинг` и `Генерация изображений` (модель `gpt-image-1.5` в `.env`).
+5. Нажать `Опубликовать` — релиз станет доступен по URL-структуре донора на `:8080`.
+6. Для ускорения доступна кнопка `Run all` (crawl -> rewrite -> images -> publish).
+7. На странице проекта доступна модерация проблемных изображений: повторить генерацию, оставить оригинал, удалить.
+
+## Сервисы Docker
+
+- `web` (FastAPI)
+- `worker` (Celery)
+- `postgres`
+- `redis`
+- `minio`
+- `nginx` (порт `8080`)

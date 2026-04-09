@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ project.name }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f5f7fa; margin: 0; color: #111; }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 24px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/admin">← Назад</a>
+  <h1>{{ project.name }}</h1>
+  <div class="card">
+    <p><b>Источник:</b> {{ project.source_url }}</p>
+    <p><b>Глубина:</b> {{ project.crawl_depth }}</p>
+    <p><b>Страниц:</b> {{ pages_count }}</p>
+    <p><b>Товаров:</b> {{ products_count }}</p>
+    <p><b>Статусы:</b> crawl={{ project.crawl_status }}, rewrite={{ project.rewrite_status }}, image={{ project.image_status }}, publish={{ project.publish_status }}</p>
+    {% if project.last_error %}<p><b>Последняя ошибка:</b> {{ project.last_error }}</p>{% endif %}
+  </div>
+  <div class="card">
+    <h3>Релизы</h3>
+    {% for r in releases %}
+      <div>{{ r.created_at }} — {{ r.status }} {% if r.is_active %}(active){% endif %}</div>
+    {% else %}
+      <div>Нет релизов</div>
+    {% endfor %}
+  </div>
+  <div class="card">
+    <h3>Проблемные изображения</h3>
+    {% for a in failed_assets %}
+      <div style="border-top:1px solid #eee;padding-top:10px;margin-top:10px;">
+        <div><small>{{ a.id }}</small></div>
+        <div>{{ a.source_url }}</div>
+        <div>Причина: {{ a.failure_reason }}</div>
+        <form method="post" action="/admin/assets/{{ a.id }}/retry" style="display:inline;">
+          <input type="hidden" name="project_id" value="{{ project.id }}">
+          <button type="submit">Повторить генерацию</button>
+        </form>
+        <form method="post" action="/admin/assets/{{ a.id }}/use-original" style="display:inline;">
+          <input type="hidden" name="project_id" value="{{ project.id }}">
+          <button type="submit">Оставить оригинал</button>
+        </form>
+        <form method="post" action="/admin/assets/{{ a.id }}/delete" style="display:inline;">
+          <input type="hidden" name="project_id" value="{{ project.id }}">
+          <button type="submit">Удалить</button>
+        </form>
+      </div>
+    {% else %}
+      <div>Нет проблемных изображений</div>
+    {% endfor %}
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Админка клонирования</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f5f7fa; color: #111; margin: 0; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 24px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    input, textarea { width: 100%; margin: 6px 0 12px; padding: 10px; }
+    button { padding: 10px 14px; border: 0; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; }
+    a { color: #2563eb; text-decoration: none; }
+    .progress { background:#e5e7eb; border-radius:10px; overflow:hidden; height:10px; margin-top:8px; }
+    .bar { height:100%; background:#16a34a; width:0%; transition:width .3s ease; }
+    .meta { font-size: 12px; color:#6b7280; margin-top:6px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Site Clone Admin</h1>
+  <div class="card">
+    <h2>Новый проект</h2>
+    <form method="post" action="/admin/projects">
+      <label>URL донора</label>
+      <input name="source_url" required placeholder="https://radiator-home-heat.ru">
+      <label>Название проекта</label>
+      <input name="name" required placeholder="Каталог радиаторов">
+      <label>Глубина обхода</label>
+      <input name="crawl_depth" type="number" min="1" max="6" value="2">
+      <label>Промпт дизайна</label>
+      <textarea name="design_prompt" rows="3"></textarea>
+      <label>Глобальный промпт изображений</label>
+      <textarea name="image_prompt_global" rows="3"></textarea>
+      <label>Tone of voice</label>
+      <input name="tone_of_voice" placeholder="профессиональный технический">
+      <label><input type="checkbox" name="with_cart"> Включить корзину</label>
+      <br><br>
+      <button type="submit">Создать проект</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Проекты</h2>
+    {% for p in projects %}
+      <div style="border-top:1px solid #eee; padding-top:12px; margin-top:12px;">
+        <b>{{ p.name }}</b> — {{ p.source_url }}<br>
+        <small>ID: {{ p.id }}</small><br><br>
+        <button hx-post="/admin/projects/{{ p.id }}/clone" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Клонировать</button>
+        <button hx-post="/admin/projects/{{ p.id }}/run-all" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#0f766e">Run all</button>
+        <button hx-post="/admin/projects/{{ p.id }}/rewrite" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Рерайтинг</button>
+        <button hx-post="/admin/projects/{{ p.id }}/images" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Генерация изображений</button>
+        <button hx-post="/admin/projects/{{ p.id }}/publish" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Опубликовать</button>
+        <a href="/admin/projects/{{ p.id }}">Подробнее</a>
+        <div id="task-{{ p.id }}"></div>
+        <div class="meta" id="meta-{{ p.id }}">Страницы: 0 | Товары: 0 | Изображения: 0</div>
+        <div class="meta" id="stage-{{ p.id }}">Стадии: crawl=idle rewrite=idle image=idle publish=idle</div>
+        <div class="progress"><div class="bar" id="rewrite-{{ p.id }}"></div></div>
+        <div class="meta">Рерайтинг</div>
+        <div class="progress"><div class="bar" id="images-{{ p.id }}" style="background:#2563eb"></div></div>
+        <div class="meta" id="imgmeta-{{ p.id }}">Генерация изображений</div>
+      </div>
+    {% else %}
+      <p>Пока нет проектов.</p>
+    {% endfor %}
+  </div>
+</div>
+<script>
+  async function refreshProgress(projectId) {
+    try {
+      const r = await fetch(`/admin/projects/${projectId}/progress`);
+      const d = await r.json();
+      const rewriteBar = document.getElementById(`rewrite-${projectId}`);
+      const imagesBar = document.getElementById(`images-${projectId}`);
+      const meta = document.getElementById(`meta-${projectId}`);
+      const imgmeta = document.getElementById(`imgmeta-${projectId}`);
+      const stage = document.getElementById(`stage-${projectId}`);
+      if (rewriteBar) rewriteBar.style.width = `${d.rewrite_progress_pct || 0}%`;
+      if (imagesBar) imagesBar.style.width = `${d.images_progress_pct || 0}%`;
+      if (meta) meta.textContent = `Страницы: ${d.pages_total} | Товары: ${d.products_total} | Изображения: ${d.assets_total}`;
+      if (imgmeta) imgmeta.textContent = `Сгенерировано: ${d.assets_generated}, ошибок: ${d.assets_failed}`;
+      if (stage) stage.textContent = `Стадии: crawl=${d.crawl_status} rewrite=${d.rewrite_status} image=${d.image_status} publish=${d.publish_status}${d.last_error ? ' | err=' + d.last_error : ''}`;
+    } catch (_) {}
+  }
+  const ids = [{% for p in projects %}"{{ p.id }}",{% endfor %}];
+  ids.forEach(id => refreshProgress(id));
+  setInterval(() => ids.forEach(id => refreshProgress(id)), 3000);
+</script>
+</body>
+</html>
