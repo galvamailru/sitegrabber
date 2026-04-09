@@ -2,38 +2,12 @@
 Модели БД: сообщения с привязкой к user_id и dialog_id.
 """
 from datetime import datetime
-from uuid import uuid4
-import json
-import time
-from pathlib import Path
+from uuid import UUID as PyUUID, uuid4
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-
-# region agent log
-def _agent_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    payload = {
-        "sessionId": "52f300",
-        "runId": "run1",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    with Path("debug-52f300.log").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-
-_agent_log(
-    "H2",
-    "app/models.py:module",
-    "models module import started",
-    {"uuid4_type": str(type(uuid4)), "uuid4_repr": str(uuid4)},
-)
-# endregion
 
 
 class Base(DeclarativeBase):
@@ -43,7 +17,7 @@ class Base(DeclarativeBase):
 class Message(Base):
     __tablename__ = "messages"
 
-    id: Mapped[uuid4] = mapped_column(
+    id: Mapped[PyUUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid4,
@@ -64,7 +38,7 @@ class Lead(Base):
     __tablename__ = "leads"
     __table_args__ = (UniqueConstraint("user_id", "dialog_id", name="uq_leads_user_dialog"),)
 
-    id: Mapped[uuid4] = mapped_column(
+    id: Mapped[PyUUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid4,
@@ -88,7 +62,7 @@ class Lead(Base):
 class SiteProject(Base):
     __tablename__ = "site_projects"
 
-    id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     source_url: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     design_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -110,28 +84,20 @@ class SiteProject(Base):
 class SiteRelease(Base):
     __tablename__ = "site_releases"
 
-    id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    site_project_id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    site_project_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default="draft", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
-# region agent log
-_agent_log(
-    "H2",
-    "app/models.py:before_Page",
-    "before Page class definition",
-    {"note": "next line includes uuid4 | None annotation"},
-)
-# endregion
 class Page(Base):
     __tablename__ = "pages"
     __table_args__ = (UniqueConstraint("site_project_id", "url_path", name="uq_pages_project_path"),)
 
-    id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    site_project_id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
-    parent_id: Mapped[uuid4 | None] = mapped_column(UUID(as_uuid=True), ForeignKey("pages.id"), nullable=True)
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    site_project_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
+    parent_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("pages.id"), nullable=True)
     url_path: Mapped[str] = mapped_column(Text, nullable=False)
     full_url: Mapped[str] = mapped_column(Text, nullable=False)
     depth: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -152,9 +118,9 @@ class Page(Base):
 class Product(Base):
     __tablename__ = "products"
 
-    id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    site_project_id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
-    page_id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), ForeignKey("pages.id"), nullable=False, index=True)
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    site_project_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
+    page_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("pages.id"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     rewritten_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     category: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -174,8 +140,8 @@ class Product(Base):
 class ProductSpec(Base):
     __tablename__ = "product_specs"
 
-    id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    product_id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False, index=True)
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    product_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False, index=True)
     key: Mapped[str] = mapped_column(String(255), nullable=False)
     value: Mapped[str] = mapped_column(Text, nullable=False)
     unit: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -185,10 +151,10 @@ class ProductSpec(Base):
 class Asset(Base):
     __tablename__ = "assets"
 
-    id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    site_project_id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
-    page_id: Mapped[uuid4 | None] = mapped_column(UUID(as_uuid=True), ForeignKey("pages.id"), nullable=True)
-    product_id: Mapped[uuid4 | None] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=True)
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    site_project_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
+    page_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("pages.id"), nullable=True)
+    product_id: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False, default="gallery")
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     storage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -203,8 +169,8 @@ class Asset(Base):
 class SiteDesign(Base):
     __tablename__ = "site_design"
 
-    id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    site_project_id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, unique=True, index=True)
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    site_project_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, unique=True, index=True)
     css_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     html_template: Mapped[str] = mapped_column(Text, nullable=False, default="")
     prompt_used: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -218,8 +184,8 @@ class CategoryPrompt(Base):
     __tablename__ = "category_prompts"
     __table_args__ = (UniqueConstraint("site_project_id", "name", name="uq_category_prompts"),)
 
-    id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    site_project_id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    site_project_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     url_pattern: Mapped[str | None] = mapped_column(String(255), nullable=True)
     image_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -228,8 +194,8 @@ class CategoryPrompt(Base):
 class AIJob(Base):
     __tablename__ = "ai_jobs"
 
-    id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    site_project_id: Mapped[uuid4] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    site_project_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
     job_type: Mapped[str] = mapped_column(String(32), nullable=False)
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     model: Mapped[str] = mapped_column(String(128), nullable=False)

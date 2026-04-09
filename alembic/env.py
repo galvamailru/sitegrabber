@@ -2,10 +2,7 @@
 Alembic env: async migrations, URL из .env.
 """
 import asyncio
-import json
 from logging.config import fileConfig
-from pathlib import Path
-import time
 
 from alembic import context
 from sqlalchemy import pool
@@ -15,42 +12,11 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.config import get_settings
 from app.models import Base
 
-# region agent log
-def _agent_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    payload = {
-        "sessionId": "52f300",
-        "runId": "run1",
-        "hypothesisId": hypothesis_id,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    with Path("debug-52f300.log").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-
-_agent_log(
-    "H1",
-    "alembic/env.py:module",
-    "alembic env loaded",
-    {"cwd": str(Path.cwd()), "file": __file__},
-)
-# endregion
-
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 settings = get_settings()
-# region agent log
-_agent_log(
-    "H3",
-    "alembic/env.py:settings",
-    "settings loaded for alembic",
-    {"postgres_host": settings.POSTGRES_HOST, "postgres_db": settings.POSTGRES_DB},
-)
-# endregion
 config.set_main_option("sqlalchemy.url", settings.database_url)
 
 target_metadata = Base.metadata
