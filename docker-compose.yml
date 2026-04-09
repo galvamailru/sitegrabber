@@ -31,6 +31,11 @@ services:
       - ./prompts:/app/prompts:ro
       - ./static:/app/static:ro
       - ./templates:/app/templates:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   worker:
     build: .
@@ -84,7 +89,8 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - web
+      web:
+        condition: service_healthy
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
 

@@ -37,3 +37,8 @@ if static_path.exists():
 
 
 app.include_router(published_site_router)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
