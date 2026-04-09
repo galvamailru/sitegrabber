@@ -13,6 +13,7 @@ from app.config import get_settings
 from app.storage import upload_bytes
 
 settings = get_settings()
+_worker_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _strip_tags(html: str) -> str:
@@ -364,4 +365,8 @@ async def publish_project(project_id: str) -> None:
 
 
 def run_async(coro):
-    return asyncio.run(coro)
+    global _worker_loop
+    if _worker_loop is None or _worker_loop.is_closed():
+        _worker_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_worker_loop)
+    return _worker_loop.run_until_complete(coro)
