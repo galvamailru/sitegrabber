@@ -3,11 +3,37 @@
 """
 from datetime import datetime
 from uuid import uuid4
+import json
+import time
+from pathlib import Path
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# region agent log
+def _agent_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
+    payload = {
+        "sessionId": "52f300",
+        "runId": "run1",
+        "hypothesisId": hypothesis_id,
+        "location": location,
+        "message": message,
+        "data": data,
+        "timestamp": int(time.time() * 1000),
+    }
+    with Path("debug-52f300.log").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+_agent_log(
+    "H2",
+    "app/models.py:module",
+    "models module import started",
+    {"uuid4_type": str(type(uuid4)), "uuid4_repr": str(uuid4)},
+)
+# endregion
 
 
 class Base(DeclarativeBase):
@@ -91,6 +117,14 @@ class SiteRelease(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+# region agent log
+_agent_log(
+    "H2",
+    "app/models.py:before_Page",
+    "before Page class definition",
+    {"note": "next line includes uuid4 | None annotation"},
+)
+# endregion
 class Page(Base):
     __tablename__ = "pages"
     __table_args__ = (UniqueConstraint("site_project_id", "url_path", name="uq_pages_project_path"),)
