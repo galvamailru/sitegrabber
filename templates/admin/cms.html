@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CMS — {{ project.name }}</title>
+  <style>
+    body{font-family:Arial,sans-serif;background:#f5f7fa;margin:0;color:#111}
+    .wrap{max-width:1200px;margin:0 auto;padding:24px}
+    .card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin-bottom:16px}
+    input,textarea,select{width:100%;padding:8px;margin:4px 0 8px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .btn{padding:8px 12px;background:#2563eb;color:#fff;border:0;border-radius:8px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/admin/projects/{{ project.id }}">← Назад к проекту</a>
+  <h1>CMS редактор: {{ project.name }}</h1>
+  <div class="grid">
+    <div class="card">
+      <h3>Товары ({{ products|length }})</h3>
+      {% for p in products %}
+      <details>
+        <summary>{{ p.name }}</summary>
+        <form method="post" action="/admin/products/{{ p.id }}/update">
+          <input type="hidden" name="project_id" value="{{ project.id }}">
+          <label>Название</label><input name="name" value="{{ p.name }}">
+          <label>Название (rewritten)</label><input name="rewritten_name" value="{{ p.rewritten_name or '' }}">
+          <label>Цена от</label><input name="price_from" value="{{ p.price_from or '' }}">
+          <label>Описание</label><textarea name="rewritten_description" rows="4">{{ p.rewritten_description or p.original_description or '' }}</textarea>
+          <button class="btn" type="submit">Сохранить товар</button>
+        </form>
+      </details>
+      {% endfor %}
+    </div>
+    <div class="card">
+      <h3>Страницы ({{ pages|length }})</h3>
+      {% for pg in pages %}
+      <details>
+        <summary>{{ pg.url_path }} — {{ pg.page_type }}</summary>
+        <form method="post" action="/admin/pages/{{ pg.id }}/update">
+          <input type="hidden" name="project_id" value="{{ project.id }}">
+          <label>Title</label><input name="title" value="{{ pg.title or '' }}">
+          <label>Описание</label><textarea name="meta_description" rows="3">{{ pg.meta_description or '' }}</textarea>
+          <label>Тип</label>
+          <select name="page_type">
+            <option value="content" {% if pg.page_type == 'content' %}selected{% endif %}>content</option>
+            <option value="product" {% if pg.page_type == 'product' %}selected{% endif %}>product</option>
+          </select>
+          <button class="btn" type="submit">Сохранить страницу</button>
+          <a href="/admin/pages/{{ pg.id }}/blocks">Блоки страницы</a>
+        </form>
+      </details>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+</body>
+</html>

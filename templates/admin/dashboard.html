@@ -53,6 +53,7 @@
         <button hx-post="/admin/projects/{{ p.id }}/images" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Генерация изображений</button>
         <button hx-post="/admin/projects/{{ p.id }}/publish" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Опубликовать</button>
         <a href="/admin/projects/{{ p.id }}">Подробнее</a>
+        <a href="/admin/projects/{{ p.id }}/cms">CMS</a>
         <div id="task-{{ p.id }}"></div>
         <div class="meta" id="meta-{{ p.id }}">Страницы: 0 | Товары: 0 | Изображения: 0</div>
         <div class="meta" id="stage-{{ p.id }}">Стадии: crawl=idle rewrite=idle image=idle publish=idle</div>

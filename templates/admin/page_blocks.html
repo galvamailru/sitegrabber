@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Блоки страницы</title>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+  <style>
+    body{font-family:Arial,sans-serif;background:#f5f7fa;margin:0;color:#111}
+    .wrap{max-width:980px;margin:0 auto;padding:24px}
+    .card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin-bottom:12px}
+    input,textarea,select{width:100%;padding:8px;margin:4px 0 8px}
+    .btn{padding:8px 12px;background:#2563eb;color:#fff;border:0;border-radius:8px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/admin/projects/{{ page.site_project_id }}/cms">← Назад к CMS</a>
+  <h1>Блоки: {{ page.url_path }}</h1>
+  <div class="card">
+    <form method="post" action="/admin/pages/{{ page.id }}/blocks/add">
+      <label>Тип блока</label>
+      <select name="block_type">
+        <option value="text">text</option>
+        <option value="hero">hero</option>
+        <option value="faq">faq</option>
+      </select>
+      <label>Заголовок</label><input name="title">
+      <label>Контент</label><textarea name="content" rows="4"></textarea>
+      <button class="btn" type="submit">Добавить блок</button>
+    </form>
+  </div>
+
+  <div id="blocks-list">
+    {% for b in blocks %}
+    <div class="card" data-id="{{ b.id }}">
+      <form method="post" action="/admin/blocks/{{ b.id }}/update">
+        <label>Тип</label><input name="block_type" value="{{ b.block_type }}">
+        <label>Заголовок</label><input name="title" value="{{ b.title or '' }}">
+        <label>Контент</label><textarea name="content" rows="4">{{ b.content }}</textarea>
+        <button class="btn" type="submit">Сохранить</button>
+      </form>
+      <form method="post" action="/admin/blocks/{{ b.id }}/delete" style="margin-top:8px;">
+        <button class="btn" type="submit" style="background:#b91c1c">Удалить</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+<script>
+  const list = document.getElementById('blocks-list');
+  new Sortable(list, {
+    animation: 150,
+    onEnd: async () => {
+      const order = [...list.querySelectorAll('[data-id]')].map(x => x.dataset.id).join(',');
+      const form = new FormData();
+      form.append('order', order);
+      await fetch('/admin/pages/{{ page.id }}/blocks/reorder', { method: 'POST', body: form });
+    }
+  });
+</script>
+</body>
+</html>

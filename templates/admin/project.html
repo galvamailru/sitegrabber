@@ -13,12 +13,14 @@
 <body>
 <div class="wrap">
   <a href="/admin">← Назад</a>
+  <a href="/admin/projects/{{ project.id }}/cms" style="margin-left:12px;">Открыть CMS редактор</a>
   <h1>{{ project.name }}</h1>
   <div class="card">
     <p><b>Источник:</b> {{ project.source_url }}</p>
     <p><b>Глубина:</b> {{ project.crawl_depth }}</p>
     <p><b>Страниц:</b> {{ pages_count }}</p>
     <p><b>Товаров:</b> {{ products_count }}</p>
+    <p><b>Качество extraction:</b> AI={{ ai_pages }}, fallback={{ fallback_pages }}</p>
     <p><b>Статусы:</b> crawl={{ project.crawl_status }}, rewrite={{ project.rewrite_status }}, image={{ project.image_status }}, publish={{ project.publish_status }}</p>
     {% if project.last_error %}<p><b>Последняя ошибка:</b> {{ project.last_error }}</p>{% endif %}
   </div>
@@ -28,6 +30,17 @@
       <div>{{ r.created_at }} — {{ r.status }} {% if r.is_active %}(active){% endif %}</div>
     {% else %}
       <div>Нет релизов</div>
+    {% endfor %}
+  </div>
+  <div class="card">
+    <h3>Последние страницы (источник extraction)</h3>
+    {% for pg in recent_pages %}
+      <div style="border-top:1px solid #eee;padding-top:10px;margin-top:10px;">
+        <div><b>{{ pg.url_path }}</b> — {{ pg.page_type }}</div>
+        <div>source: {{ pg.extraction_source or "fallback" }}</div>
+      </div>
+    {% else %}
+      <div>Нет страниц</div>
     {% endfor %}
   </div>
   <div class="card">

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.celery_app import celery
 from app.database import get_db
-from app.models import Asset, Page, Product, SiteProject, SiteRelease
+from app.models import Asset, Page, PageBlock, Product, ProductSpec, SiteProject, SiteRelease
 from app.tasks import (
     crawl_site_task,
     full_clone_pipeline_task,
@@ -145,6 +145,20 @@ async def project_details(project_id: UUID, request: Request, db: AsyncSession =
             select(Asset).where(Asset.site_project_id == project_id, Asset.generation_failed.is_(True)).order_by(desc(Asset.created_at))
         )
     ).scalars().all()
+    ai_pages = await db.scalar(
+        select(func.count(Page.id)).where(Page.site_project_id == project_id, Page.extraction_source == "ai")
+    )
+    fallback_pages = await db.scalar(
+        select(func.count(Page.id)).where(Page.site_project_id == project_id, Page.extraction_source != "ai")
+    )
+    recent_pages = (
+        await db.execute(
+            select(Page)
+            .where(Page.site_project_id == project_id)
+            .order_by(desc(Page.created_at))
+            .limit(20)
+        )
+    ).scalars().all()
     return templates.TemplateResponse(
         request=request,
         name="admin/project.html",
@@ -155,6 +169,9 @@ async def project_details(project_id: UUID, request: Request, db: AsyncSession =
             "products_count": products_count or 0,
             "releases": releases,
             "failed_assets": failed_assets,
+            "ai_pages": ai_pages or 0,
+            "fallback_pages": fallback_pages or 0,
+            "recent_pages": recent_pages,
         },
     )
 
@@ -184,3 +201,131 @@ async def delete_asset(asset_id: UUID, project_id: UUID = Form(...), db: AsyncSe
         await db.delete(asset)
         await db.commit()
     return RedirectResponse(f"/admin/projects/{project_id}", status_code=303)
+
+
+@router.get("/admin/projects/{project_id}/cms", response_class=HTMLResponse)
+async def cms_editor(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return HTMLResponse("Project not found", status_code=404)
+    pages = (
+        await db.execute(select(Page).where(Page.site_project_id == project_id).order_by(Page.page_type, Page.url_path))
+    ).scalars().all()
+    products = (
+        await db.execute(select(Product).where(Product.site_project_id == project_id).order_by(Product.created_at.desc()).limit(200))
+    ).scalars().all()
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/cms.html",
+        context={"request": request, "project": project, "pages": pages, "products": products},
+    )
+
+
+@router.post("/admin/products/{product_id}/update")
+async def update_product(
+    product_id: UUID,
+    project_id: UUID = Form(...),
+    name: str = Form(...),
+    rewritten_name: str = Form(""),
+    price_from: float | None = Form(None),
+    rewritten_description: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+):
+    product = await db.scalar(select(Product).where(Product.id == product_id))
+    if product:
+        product.name = name
+        product.rewritten_name = rewritten_name or None
+        product.price_from = price_from
+        product.rewritten_description = rewritten_description
+        await db.commit()
+    return RedirectResponse(f"/admin/projects/{project_id}/cms", status_code=303)
+
+
+@router.post("/admin/pages/{page_id}/update")
+async def update_page(
+    page_id: UUID,
+    project_id: UUID = Form(...),
+    title: str = Form(""),
+    meta_description: str = Form(""),
+    page_type: str = Form("content"),
+    db: AsyncSession = Depends(get_db),
+):
+    page = await db.scalar(select(Page).where(Page.id == page_id))
+    if page:
+        page.title = title or page.title
+        page.meta_description = meta_description
+        page.page_type = page_type
+        await db.commit()
+    return RedirectResponse(f"/admin/projects/{project_id}/cms", status_code=303)
+
+
+@router.get("/admin/pages/{page_id}/blocks", response_class=HTMLResponse)
+async def page_blocks_editor(page_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    page = await db.scalar(select(Page).where(Page.id == page_id))
+    if not page:
+        return HTMLResponse("Page not found", status_code=404)
+    blocks = (
+        await db.execute(select(PageBlock).where(PageBlock.page_id == page_id).order_by(PageBlock.sort_order, PageBlock.created_at))
+    ).scalars().all()
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/page_blocks.html",
+        context={"request": request, "page": page, "blocks": blocks},
+    )
+
+
+@router.post("/admin/pages/{page_id}/blocks/add")
+async def add_page_block(
+    page_id: UUID,
+    block_type: str = Form("text"),
+    title: str = Form(""),
+    content: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+):
+    order = await db.scalar(select(func.count(PageBlock.id)).where(PageBlock.page_id == page_id)) or 0
+    db.add(PageBlock(page_id=page_id, block_type=block_type, title=title or None, content=content, sort_order=order))
+    await db.commit()
+    return RedirectResponse(f"/admin/pages/{page_id}/blocks", status_code=303)
+
+
+@router.post("/admin/blocks/{block_id}/update")
+async def update_page_block(
+    block_id: UUID,
+    title: str = Form(""),
+    content: str = Form(""),
+    block_type: str = Form("text"),
+    db: AsyncSession = Depends(get_db),
+):
+    block = await db.scalar(select(PageBlock).where(PageBlock.id == block_id))
+    if not block:
+        return HTMLResponse("Block not found", status_code=404)
+    block.title = title or None
+    block.content = content
+    block.block_type = block_type
+    await db.commit()
+    return RedirectResponse(f"/admin/pages/{block.page_id}/blocks", status_code=303)
+
+
+@router.post("/admin/blocks/{block_id}/delete")
+async def delete_page_block(block_id: UUID, db: AsyncSession = Depends(get_db)):
+    block = await db.scalar(select(PageBlock).where(PageBlock.id == block_id))
+    if not block:
+        return HTMLResponse("Block not found", status_code=404)
+    page_id = block.page_id
+    await db.delete(block)
+    await db.commit()
+    return RedirectResponse(f"/admin/pages/{page_id}/blocks", status_code=303)
+
+
+@router.post("/admin/pages/{page_id}/blocks/reorder")
+async def reorder_page_blocks(page_id: UUID, order: str = Form(...), db: AsyncSession = Depends(get_db)):
+    ids = [x.strip() for x in order.split(",") if x.strip()]
+    blocks = (
+        await db.execute(select(PageBlock).where(PageBlock.page_id == page_id))
+    ).scalars().all()
+    by_id = {str(b.id): b for b in blocks}
+    for idx, bid in enumerate(ids):
+        if bid in by_id:
+            by_id[bid].sort_order = idx
+    await db.commit()
+    return JSONResponse({"status": "ok"})

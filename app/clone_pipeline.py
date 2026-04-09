@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import re
 from collections import deque
 from urllib.parse import urljoin, urlparse
@@ -197,6 +198,80 @@ def _slug_from_path(path: str) -> str:
     return s or "home"
 
 
+def _try_parse_json(text: str) -> dict | None:
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"\{[\s\S]*\}", text)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return None
+
+
+async def _extract_structured_with_llm(
+    client: httpx.AsyncClient,
+    project: SiteProject,
+    page_url: str,
+    title: str | None,
+    text: str,
+    image_candidates: list[str],
+) -> dict | None:
+    if not settings.DEEPSEEK_API_KEY:
+        return None
+    prompt = (
+        "Извлеки структуру страницы в JSON. Ответ строго JSON без пояснений.\n"
+        "Схема:\n"
+        "{\n"
+        '  "page_type":"product|content",\n'
+        '  "page_title":"...",\n'
+        '  "meta_description":"...",\n'
+        '  "product":{\n'
+        '    "name":"...",\n'
+        '    "price_from":7410,\n'
+        '    "currency":"RUB",\n'
+        '    "description":"полное описание товара",\n'
+        '    "specs":[{"key":"Ширина","value":"от 80 мм до 2500 мм"}],\n'
+        '    "gallery":["url1","url2"]\n'
+        "  },\n"
+        '  "content_page":{"category":"contacts|news|about|other","summary":"..."}\n'
+        "}\n"
+        "Правила:\n"
+        "- Если страница товарная, page_type=product и заполни product.\n"
+        "- Если страница контентная, page_type=content и заполни content_page.\n"
+        "- specs только реальные технические параметры, без навигации/контактов.\n"
+        "- gallery заполни только ссылками на изображения товара.\n\n"
+        f"URL: {page_url}\nTITLE: {title or ''}\n"
+        f"IMAGE_CANDIDATES: {image_candidates[:40]}\n"
+        f"TEXT:\n{text[:10000]}"
+    )
+    try:
+        r = await _request_with_retry(
+            client,
+            "POST",
+            f"{settings.LLM_URL.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}"},
+            json={
+                "model": settings.DEEPSEEK_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+            },
+        )
+        content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+        parsed = _try_parse_json(content)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        return None
+    return None
+
+
 async def _classify_page(client: httpx.AsyncClient, project: SiteProject, title: str | None, text: str) -> str:
     sample = text[:3000]
     if settings.DEEPSEEK_API_KEY:
@@ -266,7 +341,25 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                 html = resp.text
                 path = urlparse(normalized).path or "/"
                 text = _strip_tags(html)
-                page_type = await _classify_page(client, project, _extract_title(html), text)
+                title = _extract_title(html)
+                image_candidates = _extract_images(normalized, html)
+                ai_struct = await _extract_structured_with_llm(
+                    client=client,
+                    project=project,
+                    page_url=normalized,
+                    title=title,
+                    text=text,
+                    image_candidates=image_candidates,
+                )
+                page_type = (
+                    ai_struct.get("page_type", "").lower()
+                    if isinstance(ai_struct, dict)
+                    else await _classify_page(client, project, title, text)
+                )
+                extraction_source = "ai" if isinstance(ai_struct, dict) else "fallback"
+                if page_type not in {"product", "content"}:
+                    page_type = await _classify_page(client, project, title, text)
+                    extraction_source = "fallback"
                 transformed_html = _rewrite_html_for_local(start, html)
                 page = Page(
                     site_project_id=project.id,
@@ -274,12 +367,14 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                     url_path=path,
                     full_url=normalized,
                     depth=depth,
-                    title=_extract_title(html),
+                    title=title,
                     meta_description=_extract_description(html),
                     original_html=html,
                     transformed_html=transformed_html,
                     original_texts={"text": text[:6000]},
                     page_type=page_type,
+                    extraction_source=extraction_source,
+                    raw_ai_json=ai_struct if isinstance(ai_struct, dict) else None,
                 )
                 db.add(page)
                 await db.flush()
@@ -288,7 +383,15 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                 og_image = _extract_og_image(html)
                 if og_image:
                     db.add(Asset(site_project_id=project.id, page_id=page.id, role="main", source_url=og_image))
-                for i, image_url in enumerate(_extract_images(normalized, html)):
+                gallery_from_ai = []
+                if isinstance(ai_struct, dict):
+                    gallery_from_ai = (
+                        (ai_struct.get("product") or {}).get("gallery") or []
+                        if isinstance(ai_struct.get("product"), dict)
+                        else []
+                    )
+                image_list = gallery_from_ai or image_candidates
+                for i, image_url in enumerate(image_list):
                     db.add(
                         Asset(
                             site_project_id=project.id,
@@ -299,29 +402,53 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                     )
 
                 if page.page_type == "product":
+                    ai_product = (ai_struct.get("product") or {}) if isinstance(ai_struct, dict) else {}
                     price = None
-                    pm = re.search(r"(?:от|От)\s+([0-9\s]+)\s*(?:₽|руб)", text)
-                    if pm:
+                    if isinstance(ai_product, dict) and ai_product.get("price_from") is not None:
                         try:
-                            price = float(pm.group(1).replace(" ", ""))
+                            price = float(str(ai_product.get("price_from")).replace(" ", ""))
                         except ValueError:
                             price = None
-                    description_block = _extract_description_block(text)
+                    if price is None:
+                        pm = re.search(r"(?:от|От)\s+([0-9\s]+)\s*(?:₽|руб)", text)
+                        if pm:
+                            try:
+                                price = float(pm.group(1).replace(" ", ""))
+                            except ValueError:
+                                price = None
+                    description_block = (
+                        ai_product.get("description")
+                        if isinstance(ai_product, dict) and ai_product.get("description")
+                        else _extract_description_block(text)
+                    )
                     specs_block = _extract_specs_block(text)
                     product = Product(
                         site_project_id=project.id,
                         page_id=page.id,
-                        name=page.title or path,
+                        name=(
+                            ai_product.get("name")
+                            if isinstance(ai_product, dict) and ai_product.get("name")
+                            else (page.title or path)
+                        ),
                         slug=_slug_from_path(path),
                         price_from=price,
-                        currency="RUB",
+                        currency=(
+                            ai_product.get("currency")
+                            if isinstance(ai_product, dict) and ai_product.get("currency")
+                            else "RUB"
+                        ),
                         original_description=(description_block or page.meta_description or "")[:4000],
                         rewritten_description=(description_block or page.meta_description or "")[:4000],
                     )
                     db.add(product)
                     await db.flush()
-                    specs_source = specs_block or text
-                    for idx, (k, v) in enumerate(_extract_specs(specs_source)):
+                    ai_specs: list[tuple[str, str]] = []
+                    if isinstance(ai_product, dict) and isinstance(ai_product.get("specs"), list):
+                        for s in ai_product.get("specs"):
+                            if isinstance(s, dict) and s.get("key") and s.get("value"):
+                                ai_specs.append((str(s.get("key")).strip(), str(s.get("value")).strip()))
+                    specs_pairs = ai_specs or _extract_specs(specs_block or text)
+                    for idx, (k, v) in enumerate(specs_pairs):
                         db.add(ProductSpec(product_id=product.id, key=k, value=v, sort_order=idx))
                     # Link already collected page assets to this product.
                     page_assets = (
