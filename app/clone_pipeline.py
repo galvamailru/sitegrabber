@@ -69,6 +69,50 @@ def _extract_images(base_url: str, html: str) -> list[str]:
     return uniq
 
 
+def _rewrite_html_for_local(source_url: str, html: str) -> str:
+    parsed = urlparse(source_url)
+    host = parsed.netloc
+
+    def _rewrite_attr(match: re.Match) -> str:
+        prefix = match.group(1)
+        quote = match.group(2)
+        value = match.group(3)
+        suffix = match.group(4)
+
+        if value.startswith(("mailto:", "tel:", "javascript:", "#", "data:")):
+            return match.group(0)
+
+        if value.startswith("//"):
+            return f"{prefix}{quote}https:{value}{quote}{suffix}"
+
+        if value.startswith("http://") or value.startswith("https://"):
+            p = urlparse(value)
+            if p.netloc == host:
+                local = p.path or "/"
+                if p.query:
+                    local += f"?{p.query}"
+                if p.fragment:
+                    local += f"#{p.fragment}"
+                return f"{prefix}{quote}{local}{quote}{suffix}"
+            return match.group(0)
+
+        if value.startswith("/"):
+            return match.group(0)
+
+        return f"{prefix}{quote}/{value}{quote}{suffix}"
+
+    rewritten = re.sub(
+        r'((?:href|src|action)\s*=\s*)(["\'])(.*?)(\2)',
+        _rewrite_attr,
+        html,
+        flags=re.IGNORECASE,
+    )
+    rewritten = rewritten.replace(source_url.rstrip("/"), "")
+    rewritten = rewritten.replace(f"https://{host}", "")
+    rewritten = rewritten.replace(f"http://{host}", "")
+    return rewritten
+
+
 async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, **kwargs) -> httpx.Response:
     delay = 1.0
     last_exc: Exception | None = None
@@ -141,6 +185,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                 html = resp.text
                 path = urlparse(normalized).path or "/"
                 text = _strip_tags(html)
+                transformed_html = _rewrite_html_for_local(start, html)
                 page = Page(
                     site_project_id=project.id,
                     parent_id=parent_id,
@@ -150,7 +195,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                     title=_extract_title(html),
                     meta_description=_extract_description(html),
                     original_html=html,
-                    transformed_html=html,
+                    transformed_html=transformed_html,
                     original_texts={"text": text[:6000]},
                     page_type="product" if "радиатор" in text.lower() else "generic",
                 )

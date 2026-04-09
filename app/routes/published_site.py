@@ -1,10 +1,13 @@
+from urllib.parse import urljoin, urlparse
+
+import httpx
 from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Page, SiteRelease
+from app.models import Page, SiteProject, SiteRelease
 from app.storage import get_object_bytes
 
 router = APIRouter(tags=["published-site"])
@@ -41,6 +44,8 @@ async def published_page(full_path: str, db: AsyncSession = Depends(get_db)):
     active = await db.scalar(select(SiteRelease).where(SiteRelease.is_active.is_(True)).order_by(SiteRelease.created_at.desc()))
     if not active:
         return HTMLResponse("<h1>No published site yet</h1><p>Open /admin to start cloning.</p>", status_code=200)
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == active.site_project_id))
+    source_root = project.source_url.rstrip("/") if project else ""
     page = await db.scalar(
         select(Page).where(Page.site_project_id == active.site_project_id, Page.url_path == path).limit(1)
     )
@@ -52,4 +57,14 @@ async def published_page(full_path: str, db: AsyncSession = Depends(get_db)):
         )
         if first_page and first_page.transformed_html:
             return HTMLResponse(first_page.transformed_html)
+    # Fallback proxy for missed static/resources to preserve layout.
+    if source_root:
+        try:
+            upstream_url = urljoin(f"{source_root}/", full_path)
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+                r = await client.get(upstream_url)
+            content_type = r.headers.get("content-type", "text/plain")
+            return Response(content=r.content, media_type=content_type, status_code=r.status_code)
+        except Exception:
+            pass
     return HTMLResponse("<h1>404</h1>", status_code=404)
