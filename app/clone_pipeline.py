@@ -52,13 +52,24 @@ def _extract_og_image(html: str) -> str | None:
 
 
 def _extract_images(base_url: str, html: str) -> list[str]:
-    links = re.findall(r'(?:src|data-src)\s*=\s*"([^"]+)"', html, flags=re.IGNORECASE)
     out = []
+    attr_links = re.findall(r'(?:src|data-src|data-lazy|data-original|href)\s*=\s*"([^"]+)"', html, flags=re.IGNORECASE)
+    css_links = re.findall(r'url\(([^)]+)\)', html, flags=re.IGNORECASE)
+    raw_links = re.findall(r'https?://[^\s"\'<>]+', html, flags=re.IGNORECASE)
+    links = [*attr_links, *css_links, *raw_links]
     for href in links:
+        href = href.strip(" '\"")
+        href = href.replace("&amp;", "&")
         if href.startswith("data:"):
             continue
-        if any(href.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"]) or "creatium.io" in href:
-            out.append(urljoin(base_url, href))
+        if not any(ext in href.lower() for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"]):
+            continue
+        full = urljoin(base_url, href)
+        # Skip obvious non-product assets.
+        low = full.lower()
+        if any(skip in low for skip in ["/favicon", "reviews_", "/logo", "/icon", "sprite"]):
+            continue
+        out.append(full)
     seen = set()
     uniq = []
     for i in out:
@@ -132,10 +143,12 @@ async def _request_with_retry(client: httpx.AsyncClient, method: str, url: str, 
 
 def _extract_specs(text: str) -> list[tuple[str, str]]:
     specs = []
-    for m in re.finditer(r"([А-ЯA-ZЁ][А-ЯA-ZЁа-яa-z0-9\-\s]{2,40})\s*:\s*([^:]{2,120})", text):
+    for m in re.finditer(r"([А-ЯA-ZЁ][А-ЯA-ZЁа-яa-z0-9\-\s]{2,40})\s*:\s*([^:\n]{2,180})", text):
         k = re.sub(r"\s+", " ", m.group(1)).strip()
         v = re.sub(r"\s+", " ", m.group(2)).strip()
-        if k.lower() in {"контакты", "каталог", "отзывы"}:
+        if k.lower() in {"контакты", "каталог", "отзывы", "ваш номер"}:
+            continue
+        if any(noise in v.lower() for noise in ["каталог о компании", "перезвоните мне", "код подтверждения"]):
             continue
         specs.append((k, v))
     seen = set()
@@ -146,6 +159,37 @@ def _extract_specs(text: str) -> list[tuple[str, str]]:
         seen.add(item)
         uniq.append(item)
     return uniq
+
+
+def _extract_description_block(text: str) -> str:
+    m = re.search(
+        r"Описание товара\s*(.*?)\s*(?:Характеристики товара|ОСТАЛИСЬ ВОПРОСЫ|КОНТАКТЫ|Copyright|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        return ""
+    val = re.sub(r"\s+", " ", m.group(1)).strip()
+    return val[:4000]
+
+
+def _extract_specs_block(text: str) -> str:
+    m = re.search(
+        r"Характеристики\s*:?\s*(.*?)\s*(?:От\s+[0-9\s]+\s+руб|Рассчитать стоимость|Заказать в 1 клик|Описание товара|ОСТАЛИСЬ ВОПРОСЫ|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not m:
+        # fallback
+        m = re.search(
+            r"(Ширина\s*:.*?)(?:ОСТАЛИСЬ ВОПРОСЫ|КОНТАКТЫ|$)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not m:
+            return ""
+    val = re.sub(r"\s+", " ", m.group(1)).strip()
+    return val[:2500]
 
 
 def _slug_from_path(path: str) -> str:
@@ -262,6 +306,8 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                             price = float(pm.group(1).replace(" ", ""))
                         except ValueError:
                             price = None
+                    description_block = _extract_description_block(text)
+                    specs_block = _extract_specs_block(text)
                     product = Product(
                         site_project_id=project.id,
                         page_id=page.id,
@@ -269,13 +315,20 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                         slug=_slug_from_path(path),
                         price_from=price,
                         currency="RUB",
-                        original_description=(page.meta_description or "")[:2000],
-                        rewritten_description=(page.meta_description or "")[:2000],
+                        original_description=(description_block or page.meta_description or "")[:4000],
+                        rewritten_description=(description_block or page.meta_description or "")[:4000],
                     )
                     db.add(product)
                     await db.flush()
-                    for idx, (k, v) in enumerate(_extract_specs(text)):
+                    specs_source = specs_block or text
+                    for idx, (k, v) in enumerate(_extract_specs(specs_source)):
                         db.add(ProductSpec(product_id=product.id, key=k, value=v, sort_order=idx))
+                    # Link already collected page assets to this product.
+                    page_assets = (
+                        await db.execute(select(Asset).where(Asset.page_id == page.id).order_by(Asset.created_at))
+                    ).scalars().all()
+                    for a in page_assets:
+                        a.product_id = product.id
 
                 for link in _extract_links(normalized, html):
                     p = urlparse(link)
