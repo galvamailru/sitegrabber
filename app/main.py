@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.database import init_db
+from app.routes.catalog_chat import router as catalog_chat_router
 from app.routes.clone_admin import router as clone_admin_router
 from app.routes.admin import router as admin_router
 from app.routes.chat import router as chat_router
@@ -27,6 +28,7 @@ app = FastAPI(
 )
 
 app.include_router(chat_router)
+app.include_router(catalog_chat_router)
 app.include_router(admin_router)
 app.include_router(clone_admin_router)
 

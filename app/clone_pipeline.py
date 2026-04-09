@@ -148,6 +148,43 @@ def _extract_specs(text: str) -> list[tuple[str, str]]:
     return uniq
 
 
+def _slug_from_path(path: str) -> str:
+    s = path.strip("/").replace("/", "-")
+    return s or "home"
+
+
+async def _classify_page(client: httpx.AsyncClient, project: SiteProject, title: str | None, text: str) -> str:
+    sample = text[:3000]
+    if settings.DEEPSEEK_API_KEY:
+        try:
+            prompt = (
+                "Классифицируй страницу как product или content. "
+                "product = карточка/описание товара с характеристиками/ценой. "
+                "content = новости, контакты, о компании, статья и т.п. "
+                "Ответ только одним словом: product или content.\n\n"
+                f"TITLE: {title or ''}\nTEXT: {sample}"
+            )
+            r = await _request_with_retry(
+                client,
+                "POST",
+                f"{settings.LLM_URL.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}"},
+                json={
+                    "model": settings.DEEPSEEK_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0,
+                },
+            )
+            content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "").lower()
+            if "product" in content:
+                return "product"
+            return "content"
+        except Exception:
+            pass
+    t = (title or "").lower() + " " + sample.lower()
+    return "product" if any(x in t for x in ["радиатор", "цена", "характеристик"]) else "content"
+
+
 async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
     async with async_session_factory() as db:
         project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
@@ -185,6 +222,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                 html = resp.text
                 path = urlparse(normalized).path or "/"
                 text = _strip_tags(html)
+                page_type = await _classify_page(client, project, _extract_title(html), text)
                 transformed_html = _rewrite_html_for_local(start, html)
                 page = Page(
                     site_project_id=project.id,
@@ -197,7 +235,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                     original_html=html,
                     transformed_html=transformed_html,
                     original_texts={"text": text[:6000]},
-                    page_type="product" if "радиатор" in text.lower() else "generic",
+                    page_type=page_type,
                 )
                 db.add(page)
                 await db.flush()
@@ -228,6 +266,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                         site_project_id=project.id,
                         page_id=page.id,
                         name=page.title or path,
+                        slug=_slug_from_path(path),
                         price_from=price,
                         currency="RUB",
                         original_description=(page.meta_description or "")[:2000],

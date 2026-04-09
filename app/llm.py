@@ -60,3 +60,23 @@ async def stream_chat(
                     content = delta.get("content")
                     if content:
                         yield content
+
+
+async def complete_chat(messages: list[dict[str, str]], *, system_prompt: str) -> str:
+    settings = get_settings()
+    url = f"{settings.LLM_URL.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {settings.LLM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "model": settings.LLM_MODEL,
+        "messages": [{"role": "system", "content": system_prompt}, *messages],
+        "stream": False,
+        "temperature": 0.4,
+    }
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(url, json=body, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()

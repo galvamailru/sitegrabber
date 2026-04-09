@@ -122,6 +122,7 @@ class Product(Base):
     site_project_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
     page_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("pages.id"), nullable=False, index=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     rewritten_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     category: Mapped[str | None] = mapped_column(String(255), nullable=True)
     price_from: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -207,3 +208,14 @@ class AIJob(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class CartSelection(Base):
+    __tablename__ = "cart_selections"
+    __table_args__ = (UniqueConstraint("session_id", "product_id", name="uq_cart_session_product"),)
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    site_project_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    product_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("products.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
