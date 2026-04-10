@@ -9,6 +9,16 @@ import httpx
 
 from app.config import get_settings
 
+# Длинные промпты (каталог в system) и DeepSeek могут отвечать >60s — как в clone_pipeline.
+_LLM_HTTP_TIMEOUT = httpx.Timeout(connect=30.0, read=240.0, write=60.0, pool=10.0)
+
+
+def _chat_api_key_model() -> tuple[str, str]:
+    s = get_settings()
+    key = (s.LLM_API_KEY or s.DEEPSEEK_API_KEY or "").strip()
+    model = (s.LLM_MODEL or s.DEEPSEEK_MODEL or "deepseek-chat").strip()
+    return key, model
+
 
 def load_system_prompt(path: Path) -> str:
     """Читает системный промпт только из файла. Путь из конфигурации."""
@@ -28,18 +38,21 @@ async def stream_chat(
     При ошибке LLM пробрасывает httpx.HTTPStatusError (502/503).
     """
     settings = get_settings()
+    api_key, model = _chat_api_key_model()
+    if not api_key:
+        raise RuntimeError("llm_api_key_missing")
     url = f"{settings.LLM_URL.rstrip('/')}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {settings.LLM_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     body = {
-        "model": settings.LLM_MODEL,
+        "model": model,
         "messages": [{"role": "system", "content": system_prompt}, *messages],
         "stream": True,
         "temperature": settings.LLM_TEMPERATURE,
     }
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=_LLM_HTTP_TIMEOUT) as client:
         async with client.stream("POST", url, json=body, headers=headers) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
@@ -64,18 +77,21 @@ async def stream_chat(
 
 async def complete_chat(messages: list[dict[str, str]], *, system_prompt: str) -> str:
     settings = get_settings()
+    api_key, model = _chat_api_key_model()
+    if not api_key:
+        raise RuntimeError("llm_api_key_missing")
     url = f"{settings.LLM_URL.rstrip('/')}/chat/completions"
     headers = {
-        "Authorization": f"Bearer {settings.LLM_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     body = {
-        "model": settings.LLM_MODEL,
+        "model": model,
         "messages": [{"role": "system", "content": system_prompt}, *messages],
         "stream": False,
         "temperature": 0.4,
     }
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=_LLM_HTTP_TIMEOUT) as client:
         response = await client.post(url, json=body, headers=headers)
         response.raise_for_status()
         data = response.json()

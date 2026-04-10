@@ -37,7 +37,10 @@
     <form method="post" action="/admin/projects/{{ project.id }}/crawl-collect">
       <label>Правило (свободная формулировка)</label>
       <textarea name="crawl_collect_terms" rows="5" placeholder="Например: интересуют только автомобили (модели и комплектации), не услуги, не кредит и не СТО.">{{ project.crawl_collect_terms or '' }}</textarea>
-      <p><button class="btn" type="submit">Сохранить правило</button></p>
+      <label>Ограничение по началу URL (опционально)</label>
+      <input name="crawl_url_prefix" type="url" style="width:100%;padding:8px;box-sizing:border-box;" placeholder="https://example.com/catalog-used/detail" value="{{ project.crawl_url_prefix or '' }}">
+      <p class="meta" style="font-size:12px;color:#6b7280;">Если указано, скачиваются и разбираются только страницы, чей нормализованный URL начинается с этого префикса (тот же хост и путь). Остальные URL не запрашиваются и не сохраняются. Если URL старта проекта вне префикса, обход начнётся с префикса.</p>
+      <p><button class="btn" type="submit">Сохранить настройки краула</button></p>
     </form>
   </div>
   <div class="card">

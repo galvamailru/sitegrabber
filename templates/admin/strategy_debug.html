@@ -22,6 +22,7 @@
 
   <div class="card">
     <div class="meta" style="margin-bottom:10px;"><b>Правило LLM-отбора при крауле:</b> {% if project.crawl_collect_terms %}<pre style="margin:8px 0;background:#f3f4f6;color:#111;padding:8px;border-radius:8px;white-space:pre-wrap;">{{ project.crawl_collect_terms }}</pre>{% else %}не задано{% endif %}</div>
+    <div class="meta" style="margin-bottom:10px;"><b>Префикс URL:</b> {% if project.crawl_url_prefix %}<code>{{ project.crawl_url_prefix }}</code>{% else %}не задан{% endif %}</div>
     <button hx-post="/admin/projects/{{ project.id }}/strategy/discover" hx-target="#discover-task" hx-swap="innerHTML">Re-discover strategy</button>
     <div id="discover-task" class="meta" style="margin-top:8px;"></div>
     <div class="meta">Режим стратегии: <b>{{ strategy.get("mode", "n/a") }}</b></div>

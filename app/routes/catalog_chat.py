@@ -1,3 +1,4 @@
+import logging
 import re
 from uuid import UUID
 
@@ -12,8 +13,10 @@ from app.models import Page, Product, ProductSpec, SiteProject
 from app.schemas import CatalogChatRequest
 
 router = APIRouter(prefix="/api", tags=["catalog-chat"])
+logger = logging.getLogger(__name__)
 
 _MAX_PRODUCTS = 500
+_MAX_SYSTEM_PROMPT_CHARS = 120000
 _MAX_SPECS_PER_PRODUCT = 15
 _MAX_CONTENT_PAGES = 100
 
@@ -97,6 +100,11 @@ async def catalog_chat(body: CatalogChatRequest, db: AsyncSession = Depends(get_
     )
     if catalog_table:
         system_prompt = f"{system_prompt}\n\n{catalog_table}"
+    if len(system_prompt) > _MAX_SYSTEM_PROMPT_CHARS:
+        system_prompt = (
+            system_prompt[: _MAX_SYSTEM_PROMPT_CHARS - 80]
+            + "\n\n[… контекст каталога обрезан по длине, задайте уточняющий вопрос …]"
+        )
     user_prompt = (
         f"Проект: {project.name}\n\n"
         f"Товары (полный список, до {_MAX_PRODUCTS} позиций):\n"
@@ -107,11 +115,30 @@ async def catalog_chat(body: CatalogChatRequest, db: AsyncSession = Depends(get_
     )
     try:
         answer = await complete_chat(messages=[{"role": "user", "content": user_prompt}], system_prompt=system_prompt)
+    except RuntimeError as e:
+        if str(e) == "llm_api_key_missing":
+            raise HTTPException(
+                status_code=503,
+                detail="Чат недоступен: задайте LLM_API_KEY или DEEPSEEK_API_KEY в окружении.",
+            )
+        raise
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail="Превышено время ожидания ответа LLM. Сократите вопрос или повторите позже.",
+        )
+    except httpx.RequestError as e:
+        logger.warning("catalog_chat request_error: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail="Не удалось связаться с сервисом LLM. Проверьте сеть и LLM_URL.",
+        )
     except httpx.HTTPStatusError as e:
         raise HTTPException(
             status_code=503 if e.response.status_code >= 500 else 502,
             detail="Ошибка LLM при генерации ответа",
         )
     except Exception:
+        logger.exception("catalog_chat unexpected error")
         raise HTTPException(status_code=500, detail="Временная ошибка catalog-chat")
     return {"answer": answer}

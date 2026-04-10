@@ -70,6 +70,7 @@ class SiteProject(Base):
     tone_of_voice: Mapped[str | None] = mapped_column(String(255), nullable=True)
     crawl_depth: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
     crawl_collect_terms: Mapped[str | None] = mapped_column(Text, nullable=True)
+    crawl_url_prefix: Mapped[str | None] = mapped_column(Text, nullable=True)
     crawl_collect_match_all: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     with_cart: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     crawl_status: Mapped[str] = mapped_column(String(32), default="idle", nullable=False)

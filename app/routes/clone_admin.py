@@ -48,6 +48,7 @@ async def create_project(
     name: str = Form(...),
     crawl_depth: int = Form(2),
     crawl_collect_terms: str = Form(""),
+    crawl_url_prefix: str = Form(""),
     design_prompt: str = Form(""),
     image_prompt_global: str = Form(""),
     tone_of_voice: str = Form(""),
@@ -59,6 +60,7 @@ async def create_project(
         name=name.strip(),
         crawl_depth=crawl_depth,
         crawl_collect_terms=crawl_collect_terms.strip() or None,
+        crawl_url_prefix=crawl_url_prefix.strip() or None,
         design_prompt=design_prompt.strip() or None,
         image_prompt_global=image_prompt_global.strip() or None,
         tone_of_voice=tone_of_voice.strip() or None,
@@ -488,11 +490,13 @@ async def project_details(project_id: UUID, request: Request, db: AsyncSession =
 async def update_crawl_collect_settings(
     project_id: UUID,
     crawl_collect_terms: str = Form(""),
+    crawl_url_prefix: str = Form(""),
     db: AsyncSession = Depends(get_db),
 ):
     project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
     if project:
         project.crawl_collect_terms = crawl_collect_terms.strip() or None
+        project.crawl_url_prefix = crawl_url_prefix.strip() or None
         await db.commit()
     return RedirectResponse(f"/admin/projects/{project_id}", status_code=303)
 

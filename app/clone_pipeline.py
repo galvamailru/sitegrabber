@@ -92,6 +92,25 @@ def _normalize_crawl_url(url: str) -> str:
     return norm
 
 
+def _crawl_url_prefix_norm(raw: str | None) -> str | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    return _normalize_crawl_url(s)
+
+
+def _url_matches_crawl_prefix(normalized_url: str, prefix_norm: str | None) -> bool:
+    """URL считается внутри префикса: совпадение или продолжение пути (? или / сразу после префикса)."""
+    if not prefix_norm:
+        return True
+    if normalized_url == prefix_norm:
+        return True
+    if len(normalized_url) <= len(prefix_norm) or not normalized_url.startswith(prefix_norm):
+        return False
+    boundary = normalized_url[len(prefix_norm)]
+    return boundary in "/?"
+
+
 def _is_product_like_path(path: str) -> bool:
     p = (path or "/").lower().rstrip("/") or "/"
     product_patterns = [
@@ -796,6 +815,7 @@ def _enqueue_outbound_links(
     enqueued: set[str],
     q: deque[tuple[str, int, str | None]],
     tree_state: dict[str, Any],
+    url_prefix_norm: str | None = None,
 ) -> None:
     """Дочерние URL в очередь; parent_for_children — id последней **сохранённой** страницы (или None)."""
     for link in _extract_links(normalized, html):
@@ -805,6 +825,8 @@ def _enqueue_outbound_links(
         if not _should_enqueue_link(host, p.netloc, p.path, strategy_state):
             continue
         child_url = _normalize_crawl_url(f"{p.scheme}://{p.netloc}{p.path}")
+        if not _url_matches_crawl_prefix(child_url, url_prefix_norm):
+            continue
         if child_url in visited or child_url in enqueued:
             continue
         enqueued.add(child_url)
@@ -820,6 +842,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
 
         start = _normalize_crawl_url(project.source_url)
         host = urlparse(start).netloc
+        url_prefix_norm = _crawl_url_prefix_norm(project.crawl_url_prefix)
         q: deque[tuple[str, int, str | None]]
         visited: set[str]
         enqueued: set[str]
@@ -859,10 +882,15 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
             project.crawl_processed = 0
             project.crawl_discovered = 1
             project.crawl_last_url = None
-            q = deque([(start, 0, None)])
+            crawl_seed = (
+                url_prefix_norm
+                if url_prefix_norm and not _url_matches_crawl_prefix(start, url_prefix_norm)
+                else start
+            )
+            q = deque([(crawl_seed, 0, None)])
             visited = set()
-            enqueued = {start}
-            tree_state = {"nodes": [{"url": start, "depth": 0, "parent": None, "state": "queued"}]}
+            enqueued = {crawl_seed}
+            tree_state = {"nodes": [{"url": crawl_seed, "depth": 0, "parent": None, "state": "queued"}]}
             strategy_state = {"mode": "mixed"}
             created = 0
         project.crawl_stop_requested = False
@@ -870,8 +898,13 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
 
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
             if not can_resume:
+                strategy_seed = (
+                    url_prefix_norm
+                    if url_prefix_norm and not _url_matches_crawl_prefix(start, url_prefix_norm)
+                    else start
+                )
                 try:
-                    strategy_state = await _discover_site_strategy(client, start, host)
+                    strategy_state = await _discover_site_strategy(client, strategy_seed, host)
                 except Exception:
                     strategy_state = {"mode": "mixed"}
                 project.crawl_strategy_state = _json_copy(strategy_state)
@@ -907,6 +940,14 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     _append_tree_node(tree_state, url=normalized, depth=depth, parent=parent_id, state="skipped")
                     continue
                 if normalized in visited or depth > depth_limit:
+                    continue
+                if not _url_matches_crawl_prefix(normalized, url_prefix_norm):
+                    _append_tree_node(
+                        tree_state, url=normalized, depth=depth, parent=parent_id, state="outside_prefix"
+                    )
+                    visited.add(normalized)
+                    project.crawl_tree_state = _json_copy(tree_state)
+                    await db.commit()
                     continue
                 visited.add(normalized)
 
@@ -993,6 +1034,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                             enqueued=enqueued,
                             q=q,
                             tree_state=tree_state,
+                            url_prefix_norm=url_prefix_norm,
                         )
                         project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
                         project.crawl_tree_state = _json_copy(tree_state)
@@ -1152,6 +1194,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     enqueued=enqueued,
                     q=q,
                     tree_state=tree_state,
+                    url_prefix_norm=url_prefix_norm,
                 )
                 project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
                 project.crawl_tree_state = _json_copy(tree_state)
