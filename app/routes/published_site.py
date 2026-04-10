@@ -307,8 +307,8 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
             "<h2>Инфо-страницы</h2>"
             f"<ul>{pages_links or '<li>Нет</li>'}</ul>"
         )
-        html = _html_shell("Каталог", body, site_project_id=str(active.site_project_id))
-        response = HTMLResponse(html)
+        page_html = _html_shell("Каталог", body, site_project_id=str(active.site_project_id))
+        response = HTMLResponse(page_html)
         response.set_cookie("cart_session", _get_session_id(request), max_age=60 * 60 * 24 * 30)
         return response
     if page and page.page_type == "product":
@@ -341,8 +341,8 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
                 f"<form method='post' action='/cart/add/{product.id}'><button class='btn' type='submit'>Добавить в корзину</button></form>"
                 "<p><a class='btn' href='/'>Назад в каталог</a></p>"
             )
-            html = _html_shell(product.name, body, site_project_id=str(active.site_project_id))
-            response = HTMLResponse(html)
+            page_html = _html_shell(product.name, body, site_project_id=str(active.site_project_id))
+            response = HTMLResponse(page_html)
             response.set_cookie("cart_session", _get_session_id(request), max_age=60 * 60 * 24 * 30)
             return response
     if page and page.page_type != "product":
