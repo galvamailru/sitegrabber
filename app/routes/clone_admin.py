@@ -51,7 +51,6 @@ async def create_project(
     crawl_depth: int = Form(2),
     crawl_collect_terms: str = Form(""),
     design_prompt: str = Form(""),
-    image_prompt_global: str = Form(""),
     tone_of_voice: str = Form(""),
     with_cart: bool = Form(False),
     db: AsyncSession = Depends(get_db),
@@ -62,7 +61,6 @@ async def create_project(
         crawl_depth=crawl_depth,
         crawl_collect_terms=crawl_collect_terms.strip() or None,
         design_prompt=design_prompt.strip() or None,
-        image_prompt_global=image_prompt_global.strip() or None,
         tone_of_voice=tone_of_voice.strip() or None,
         with_cart=with_cart,
     )

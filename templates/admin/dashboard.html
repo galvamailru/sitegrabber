@@ -34,8 +34,6 @@
       <textarea name="crawl_collect_terms" rows="3" placeholder="Например: только легковые автомобили и комплектации; не услуги СТО и кредит.&#10;Или: только товары-радиаторы отопления, не монтаж и доставка.&#10;Пусто = цель сбора задаётся только смыслом страницы (LLM решает should_collect)."></textarea>
       <label>Промпт дизайна</label>
       <textarea name="design_prompt" rows="3"></textarea>
-      <label>Глобальный промпт изображений</label>
-      <textarea name="image_prompt_global" rows="3"></textarea>
       <label>Tone of voice</label>
       <input name="tone_of_voice" placeholder="профессиональный технический">
       <label><input type="checkbox" name="with_cart"> Включить корзину</label>
@@ -54,16 +52,7 @@
         <button hx-post="/admin/projects/{{ p.id }}/clone" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Клонировать</button>
         <button hx-post="/admin/projects/{{ p.id }}/clone/resume" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#0284c7">Возобновить</button>
         <button hx-post="/admin/projects/{{ p.id }}/clone/stop" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#b91c1c">Стоп</button>
-        <button
-          hx-post="/admin/projects/{{ p.id }}/clone/stop"
-          hx-vals='{"publish_partial":"true"}'
-          hx-target="#task-{{ p.id }}"
-          hx-swap="innerHTML"
-          style="background:#be123c"
-        >Стоп + публикация</button>
-        <button hx-post="/admin/projects/{{ p.id }}/run-all" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#0f766e">Run all</button>
         <button hx-post="/admin/projects/{{ p.id }}/publish" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Опубликовать</button>
-        <button hx-post="/admin/projects/{{ p.id }}/rewrite" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Рерайтинг</button>
         <button hx-post="/admin/projects/{{ p.id }}/price-check" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#7c3aed">Проверка цен</button>
         <div class="meta" style="margin-top:8px;"><b>Инструменты:</b>
           <a href="/admin/projects/{{ p.id }}">Подробнее</a> ·

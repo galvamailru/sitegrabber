@@ -26,11 +26,11 @@
     <div class="{{ 'notice-ok' if notice[0] == 'ok' else 'notice-err' }}">{{ notice[1] }}</div>
   {% endif %}
   <div class="card">
-    <p class="meta">Будут перегенерированы изображения (assets), привязанные к выбранным товарам. Промпт визуала: если поле пустое — используется глобальный промпт проекта (<code>image_prompt_global</code>).</p>
+    <p class="meta">Будут перегенерированы изображения (assets), привязанные к выбранным товарам. Промпт задаётся только здесь: если поле пустое, подставляется нейтральный шаблон по умолчанию в коде (интерьер, минимализм, тот же товар).</p>
     <form method="post" action="/admin/projects/{{ project.id }}/gallery-batch">
       <p>
         <label for="image_prompt">Промпт для картинки (стиль, фон)</label>
-        <textarea id="image_prompt" name="image_prompt" rows="4" placeholder="Например: тот же товар, светлая комната, минимализм. Пусто = настройка проекта."></textarea>
+        <textarea id="image_prompt" name="image_prompt" rows="4" placeholder="Например: тот же товар, светлая комната, минимализм. Пусто = стандартный промпт из кода."></textarea>
       </p>
       <p>
         <button type="button" class="secondary" id="btn-all">Выбрать все</button>

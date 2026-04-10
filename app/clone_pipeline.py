@@ -25,6 +25,9 @@ logger = logging.getLogger("sitegrabber.clone_pipeline")
 # Краулер использует короткий timeout (20s) для HTML; DeepSeek часто отвечает дольше — иначе ReadTimeout при чтении body.
 _LLM_HTTP_TIMEOUT = httpx.Timeout(connect=30.0, read=240.0, write=60.0, pool=10.0)
 
+# Промпт визуала для генерации картинок, если не передан с админ-страницы «Галерея».
+_DEFAULT_IMAGE_GENERATION_PROMPT = "Same product, modern interior, minimal style"
+
 
 def _strip_tags(html: str) -> str:
     txt = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
@@ -1617,7 +1620,6 @@ async def regenerate_images(
     image_prompt: str | None = None,
 ) -> int:
     async with async_session_factory() as db:
-        project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
         q = select(Asset).where(Asset.site_project_id == project_id)
         uuids = _parse_uuid_list(product_ids)
         if uuids is not None:
@@ -1626,9 +1628,7 @@ async def regenerate_images(
             q = q.where(Asset.product_id.in_(uuids))
         assets = (await db.execute(q)).scalars().all()
         client = httpx.AsyncClient(timeout=60)
-        base_visual = (image_prompt or "").strip() or (
-            project.image_prompt_global or "Same product, modern interior, minimal style"
-        )
+        base_visual = (image_prompt or "").strip() or _DEFAULT_IMAGE_GENERATION_PROMPT
         for a in assets:
             if settings.OPENAI_API_KEY:
                 try:
@@ -1683,14 +1683,10 @@ async def regenerate_single_asset(asset_id: str) -> bool:
         asset = await db.scalar(select(Asset).where(Asset.id == asset_id))
         if not asset:
             return False
-        project = await db.scalar(select(SiteProject).where(SiteProject.id == asset.site_project_id))
         client = httpx.AsyncClient(timeout=60)
         try:
             if settings.OPENAI_API_KEY:
-                prompt = (
-                    f"{project.image_prompt_global or 'Same product, modern interior, minimal style'}. "
-                    f"Keep product identity."
-                )
+                prompt = f"{_DEFAULT_IMAGE_GENERATION_PROMPT}. Keep product identity."
                 r = await _request_with_retry(
                     client,
                     "POST",
