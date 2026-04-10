@@ -19,6 +19,9 @@ settings = get_settings()
 _worker_loop: asyncio.AbstractEventLoop | None = None
 logger = logging.getLogger("sitegrabber.clone_pipeline")
 
+# Краулер использует короткий timeout (20s) для HTML; DeepSeek часто отвечает дольше — иначе ReadTimeout при чтении body.
+_LLM_HTTP_TIMEOUT = httpx.Timeout(connect=30.0, read=240.0, write=60.0, pool=10.0)
+
 
 def _strip_tags(html: str) -> str:
     txt = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
@@ -387,6 +390,7 @@ async def _extract_structured_with_llm(
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
             },
+            timeout=_LLM_HTTP_TIMEOUT,
         )
         content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
         parsed = _try_parse_json(content)
@@ -437,6 +441,7 @@ async def _classify_page(client: httpx.AsyncClient, project: SiteProject, title:
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0,
                 },
+                timeout=_LLM_HTTP_TIMEOUT,
             )
             content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "").lower()
             if "product" in content:
@@ -813,6 +818,7 @@ async def rewrite_project(project_id: str) -> int:
                             "messages": [{"role": "user", "content": prompt}],
                             "temperature": 0.5,
                         },
+                        timeout=_LLM_HTTP_TIMEOUT,
                     )
                     data = resp.json()
                     content = data.get("choices", [{}])[0].get("message", {}).get("content", p.original_description)
