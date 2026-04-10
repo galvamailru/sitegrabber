@@ -142,6 +142,94 @@ async def images_manager(project_id: UUID, request: Request, db: AsyncSession = 
     )
 
 
+@router.get("/admin/projects/{project_id}/rewrite-batch", response_class=HTMLResponse)
+async def rewrite_batch_page(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return HTMLResponse("Project not found", status_code=404)
+    products = (
+        await db.execute(
+            select(Product).where(Product.site_project_id == project_id).order_by(Product.created_at.desc())
+        )
+    ).scalars().all()
+    qp = request.query_params
+    notice = None
+    if qp.get("queued"):
+        notice = ("ok", f"Задача рерайтинга поставлена в очередь (task_id={qp.get('queued')}).")
+    elif qp.get("error") == "no_products":
+        notice = ("err", "Отметьте хотя бы один товар.")
+    elif qp.get("error") == "no_project":
+        notice = ("err", "Проект не найден.")
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/rewrite_batch.html",
+        context={
+            "request": request,
+            "project": project,
+            "products": products,
+            "notice": notice,
+        },
+    )
+
+
+@router.post("/admin/projects/{project_id}/rewrite-batch")
+async def rewrite_batch_submit(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return RedirectResponse(f"/admin/projects/{project_id}/rewrite-batch?error=no_project", status_code=303)
+    form = await request.form()
+    ids = [str(x) for x in form.getlist("product_ids")]
+    if not ids:
+        return RedirectResponse(f"/admin/projects/{project_id}/rewrite-batch?error=no_products", status_code=303)
+    rp = (form.get("rewrite_prompt") or "").strip() or None
+    task = rewrite_texts_task.delay(str(project_id), product_ids=ids, rewrite_prompt=rp)
+    return RedirectResponse(f"/admin/projects/{project_id}/rewrite-batch?queued={task.id}", status_code=303)
+
+
+@router.get("/admin/projects/{project_id}/gallery-batch", response_class=HTMLResponse)
+async def gallery_batch_page(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return HTMLResponse("Project not found", status_code=404)
+    products = (
+        await db.execute(
+            select(Product).where(Product.site_project_id == project_id).order_by(Product.created_at.desc())
+        )
+    ).scalars().all()
+    qp = request.query_params
+    notice = None
+    if qp.get("queued"):
+        notice = ("ok", f"Задача генерации изображений поставлена в очередь (task_id={qp.get('queued')}).")
+    elif qp.get("error") == "no_products":
+        notice = ("err", "Отметьте хотя бы один товар.")
+    elif qp.get("error") == "no_project":
+        notice = ("err", "Проект не найден.")
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/gallery_batch.html",
+        context={
+            "request": request,
+            "project": project,
+            "products": products,
+            "notice": notice,
+        },
+    )
+
+
+@router.post("/admin/projects/{project_id}/gallery-batch")
+async def gallery_batch_submit(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return RedirectResponse(f"/admin/projects/{project_id}/gallery-batch?error=no_project", status_code=303)
+    form = await request.form()
+    ids = [str(x) for x in form.getlist("product_ids")]
+    if not ids:
+        return RedirectResponse(f"/admin/projects/{project_id}/gallery-batch?error=no_products", status_code=303)
+    ip = (form.get("image_prompt") or "").strip() or None
+    task = generate_images_task.delay(str(project_id), product_ids=ids, image_prompt=ip)
+    return RedirectResponse(f"/admin/projects/{project_id}/gallery-batch?queued={task.id}", status_code=303)
+
+
 @router.post("/admin/projects/{project_id}/publish")
 async def run_publish(project_id: UUID):
     task = publish_site_task.delay(str(project_id))

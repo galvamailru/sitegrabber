@@ -54,6 +54,7 @@ body.show-chatbot #chatbot-toggler .icon-close {
   z-index: 10000;
   width: 420px;
   max-width: calc(100vw - 40px);
+  box-sizing: border-box;
   overflow: hidden;
   background: #fff;
   border-radius: 15px;
@@ -216,7 +217,10 @@ body.show-chatbot .chatbot-popup {
 
 .chat-footer {
   position: absolute;
+  left: 0;
+  right: 0;
   bottom: 0;
+  box-sizing: border-box;
   width: 100%;
   background: #fff;
   padding: 15px 22px 20px;
@@ -227,6 +231,8 @@ body.show-chatbot .chatbot-popup {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
   background: #fff;
   border-radius: 32px;
   outline: 1px solid #cccce5;
@@ -234,6 +240,7 @@ body.show-chatbot .chatbot-popup {
   transition: outline 0.2s;
   overflow: hidden;
   padding: 3px;
+  box-sizing: border-box;
 }
 
 .chat-form:focus-within {
@@ -241,7 +248,10 @@ body.show-chatbot .chatbot-popup {
 }
 
 .chat-form .message-input {
+  display: block;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 47px;
   max-height: 180px;
   outline: none;
@@ -285,6 +295,9 @@ body.show-chatbot .chatbot-popup {
 .chat-form-wrapper {
   position: relative;
   width: 100%;
+  min-width: 0;
+  flex: 1 1 100%;
+  box-sizing: border-box;
 }
 
 .error-msg {

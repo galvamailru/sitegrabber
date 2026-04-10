@@ -61,10 +61,12 @@ def crawl_site_resume_task(project_id: str, depth: int = 2):
 
 
 @celery.task(name="rewrite_texts_task")
-def rewrite_texts_task(project_id: str):
+def rewrite_texts_task(project_id: str, product_ids: list[str] | None = None, rewrite_prompt: str | None = None):
     run_async(_set_stage(project_id, "rewrite_status", "running"))
     try:
-        result = run_async(rewrite_project(project_id))
+        result = run_async(
+            rewrite_project(project_id, product_ids=product_ids, rewrite_prompt=rewrite_prompt)
+        )
         run_async(_set_stage(project_id, "rewrite_status", "done"))
         return result
     except Exception as e:
@@ -73,10 +75,12 @@ def rewrite_texts_task(project_id: str):
 
 
 @celery.task(name="generate_images_task")
-def generate_images_task(project_id: str):
+def generate_images_task(project_id: str, product_ids: list[str] | None = None, image_prompt: str | None = None):
     run_async(_set_stage(project_id, "image_status", "running"))
     try:
-        result = run_async(regenerate_images(project_id))
+        result = run_async(
+            regenerate_images(project_id, product_ids=product_ids, image_prompt=image_prompt)
+        )
         run_async(_set_stage(project_id, "image_status", "done"))
         return result
     except Exception as e:

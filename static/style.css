@@ -57,6 +57,7 @@ body.show-chatbot #chatbot-toggler .icon-close { opacity: 1; }
   bottom: 90px;
   width: 420px;
   max-width: calc(100vw - 40px);
+  box-sizing: border-box;
   overflow: hidden;
   background: #fff;
   border-radius: 15px;
@@ -205,6 +206,8 @@ body.show-chatbot .chatbot-popup {
 
 .chat-footer {
   position: absolute;
+  left: 0;
+  right: 0;
   bottom: 0;
   width: 100%;
   background: #fff;
@@ -216,6 +219,8 @@ body.show-chatbot .chatbot-popup {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
   background: #fff;
   border-radius: 32px;
   outline: 1px solid #CCCCE5;
@@ -230,7 +235,10 @@ body.show-chatbot .chatbot-popup {
 }
 
 .chat-form .message-input {
+  display: block;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 47px;
   max-height: 180px;
   outline: none;
@@ -273,6 +281,9 @@ body.show-chatbot .chatbot-popup {
 .chat-form-wrapper {
   position: relative;
   width: 100%;
+  min-width: 0;
+  flex: 1 1 100%;
+  box-sizing: border-box;
 }
 
 .error-msg {

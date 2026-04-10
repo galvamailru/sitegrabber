@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Рерайтинг — {{ project.name }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f5f7fa; margin: 0; color: #111; }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 24px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    textarea { width: 100%; padding: 8px; box-sizing: border-box; min-height: 120px; }
+    button { padding: 10px 14px; border: 0; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; }
+    button.secondary { background: #64748b; margin-right: 8px; }
+    .notice-ok { color: #15803d; margin-bottom: 12px; }
+    .notice-err { color: #b91c1c; margin-bottom: 12px; }
+    .product-row { border-top: 1px solid #eee; padding: 8px 0; display: flex; align-items: flex-start; gap: 10px; }
+    .product-row:first-of-type { border-top: 0; }
+    .meta { font-size: 13px; color: #4b5563; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/admin/projects/{{ project.id }}">← Назад к проекту</a>
+  <h1>Рерайтинг описаний: {{ project.name }}</h1>
+  {% if notice %}
+    <div class="{{ 'notice-ok' if notice[0] == 'ok' else 'notice-err' }}">{{ notice[1] }}</div>
+  {% endif %}
+  <div class="card">
+    <p class="meta">Отметьте товары и при необходимости задайте инструкцию для LLM. Если поле промпта пустое, используется тон проекта (<b>{{ project.tone_of_voice or 'профессиональный' }}</b> по умолчанию в шаблоне).</p>
+    <form method="post" action="/admin/projects/{{ project.id }}/rewrite-batch">
+      <p>
+        <label for="rewrite_prompt">Промпт / инструкция</label>
+        <textarea id="rewrite_prompt" name="rewrite_prompt" rows="6" placeholder="Например: Сделай описание короче, без воды, акцент на надёжность и срок службы. Или оставьте пустым — тогда сработает стандартный рерайт по тону проекта."></textarea>
+      </p>
+      <p>
+        <button type="button" class="secondary" id="btn-all">Выбрать все</button>
+        <button type="button" class="secondary" id="btn-none">Снять все</button>
+      </p>
+      <div style="max-height: 420px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px;">
+        {% for p in products %}
+          <div class="product-row">
+            <input type="checkbox" name="product_ids" value="{{ p.id }}" id="p-{{ p.id }}">
+            <label for="p-{{ p.id }}" style="cursor:pointer; flex:1;">
+              <b>{{ p.name or 'Без названия' }}</b>
+              {% if p.rewritten_description %}<span class="meta"> — уже есть рерайт</span>{% endif %}
+            </label>
+          </div>
+        {% else %}
+          <p>Товаров пока нет.</p>
+        {% endfor %}
+      </div>
+      <button type="submit" {% if not products %}disabled{% endif %}>Запустить рерайтинг</button>
+    </form>
+  </div>
+</div>
+<script>
+  document.getElementById('btn-all')?.addEventListener('click', () => {
+    document.querySelectorAll('input[name="product_ids"]').forEach((el) => { el.checked = true; });
+  });
+  document.getElementById('btn-none')?.addEventListener('click', () => {
+    document.querySelectorAll('input[name="product_ids"]').forEach((el) => { el.checked = false; });
+  });
+</script>
+</body>
+</html>

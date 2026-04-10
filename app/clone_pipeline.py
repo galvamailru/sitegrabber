@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from uuid import UUID
 from collections import deque
 from collections.abc import Sequence
 from typing import Any
@@ -1545,18 +1546,45 @@ async def check_prices_project(project_id: str) -> dict:
         return {"checked": checked, "changed": changed, "failed": failed}
 
 
-async def rewrite_project(project_id: str) -> int:
+def _parse_uuid_list(raw: list[str] | None) -> list[UUID] | None:
+    if raw is None:
+        return None
+    out: list[UUID] = []
+    for x in raw:
+        try:
+            out.append(UUID(str(x)))
+        except ValueError:
+            continue
+    return out
+
+
+async def rewrite_project(
+    project_id: str,
+    *,
+    product_ids: list[str] | None = None,
+    rewrite_prompt: str | None = None,
+) -> int:
     async with async_session_factory() as db:
         project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
-        products = (await db.execute(select(Product).where(Product.site_project_id == project_id))).scalars().all()
+        q = select(Product).where(Product.site_project_id == project_id)
+        uuids = _parse_uuid_list(product_ids)
+        if uuids is not None:
+            if not uuids:
+                return 0
+            q = q.where(Product.id.in_(uuids))
+        products = (await db.execute(q)).scalars().all()
         client = httpx.AsyncClient(timeout=30)
         for p in products:
             if settings.DEEPSEEK_API_KEY and p.original_description:
                 try:
-                    prompt = (
-                        f"Перепиши описание товара в тоне '{project.tone_of_voice or 'профессиональный'}'. "
-                        f"Сохрани технический смысл и факты.\n\nТекст:\n{p.original_description}"
-                    )
+                    instr = (rewrite_prompt or "").strip()
+                    if instr:
+                        prompt = f"{instr}\n\nИсходное описание товара:\n{p.original_description}"
+                    else:
+                        prompt = (
+                            f"Перепиши описание товара в тоне '{project.tone_of_voice or 'профессиональный'}'. "
+                            f"Сохрани технический смысл и факты.\n\nТекст:\n{p.original_description}"
+                        )
                     resp = await _request_with_retry(
                         client,
                         "POST",
@@ -1582,18 +1610,29 @@ async def rewrite_project(project_id: str) -> int:
         return len(products)
 
 
-async def regenerate_images(project_id: str) -> int:
+async def regenerate_images(
+    project_id: str,
+    *,
+    product_ids: list[str] | None = None,
+    image_prompt: str | None = None,
+) -> int:
     async with async_session_factory() as db:
         project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
-        assets = (await db.execute(select(Asset).where(Asset.site_project_id == project_id))).scalars().all()
+        q = select(Asset).where(Asset.site_project_id == project_id)
+        uuids = _parse_uuid_list(product_ids)
+        if uuids is not None:
+            if not uuids:
+                return 0
+            q = q.where(Asset.product_id.in_(uuids))
+        assets = (await db.execute(q)).scalars().all()
         client = httpx.AsyncClient(timeout=60)
+        base_visual = (image_prompt or "").strip() or (
+            project.image_prompt_global or "Same product, modern interior, minimal style"
+        )
         for a in assets:
             if settings.OPENAI_API_KEY:
                 try:
-                    prompt = (
-                        f"{project.image_prompt_global or 'Same product, modern interior, minimal style'}. "
-                        f"Keep product identity."
-                    )
+                    prompt = f"{base_visual}. Keep product identity."
                     r = await client.post(
                         "https://api.openai.com/v1/images/generations",
                         headers={"Authorization": f"Bearer {settings.OPENAI_API_KEY}"},

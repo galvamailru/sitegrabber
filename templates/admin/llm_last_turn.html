@@ -13,12 +13,19 @@
     h2 { font-size: 15px; margin: 0 0 10px 0; color: #374151; }
     a { color: #2563eb; }
     code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+    .page-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 8px; }
+    .page-head h1 { margin: 0; flex: 1 1 auto; }
+    button.btn { padding: 8px 14px; background: #2563eb; color: #fff; border: 0; border-radius: 8px; cursor: pointer; font-size: 14px; }
+    button.btn:hover { background: #1d4ed8; }
   </style>
 </head>
 <body>
 <div class="wrap">
   <a href="/admin/projects/{{ project.id }}">← К проекту</a>
-  <h1>Последний запрос к LLM (краулинг)</h1>
+  <div class="page-head">
+    <h1>Последний запрос к LLM (краулинг)</h1>
+    <button type="button" class="btn" id="reload-llm-last" title="Перезагрузить страницу и подтянуть данные из БД">Обновить</button>
+  </div>
   <p class="meta">Хранится только <b>один</b> последний обмен по проекту: стратегия старта, извлечение страницы или выбор ссылок — в зависимости от того, что выполнялось последним.</p>
 
   {% if turn and turn.purpose %}
@@ -44,5 +51,15 @@
   </div>
   {% endif %}
 </div>
+<script>
+  (function () {
+    var btn = document.getElementById("reload-llm-last");
+    if (btn) {
+      btn.addEventListener("click", function () {
+        window.location.reload();
+      });
+    }
+  })();
+</script>
 </body>
 </html>
