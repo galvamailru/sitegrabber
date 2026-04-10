@@ -41,14 +41,18 @@ async def catalog_chat(body: CatalogChatRequest, db: AsyncSession = Depends(get_
 
     page_context = [f"- {pg.title or pg.url_path}: {(pg.meta_description or '')[:220]}" for pg in pages]
 
+    catalog_table = (project.catalog_prompt_table or "").strip()
     system_prompt = (
         "Ты консультант сайта-каталога. Отвечай только по данным контекста, не выдумывай.\n"
         "Если вопрос о наличии/оформлении: предложи добавить товар в корзину и оставить контакты для менеджера.\n"
-        "Формат ответа: кратко, по делу, с рекомендациями по товарам."
+        "Формат ответа: кратко, по делу, с рекомендациями по товарам.\n"
+        "Если товара нет в каталожной таблице — честно сообщи, что в текущем ассортименте его нет."
     )
+    if catalog_table:
+        system_prompt = f"{system_prompt}\n\n{catalog_table}"
     user_prompt = (
         f"Проект: {project.name}\n\n"
-        f"Товары:\n{chr(10).join(product_context) if product_context else '- нет'}\n\n"
+        f"Товары (оперативный контекст):\n{chr(10).join(product_context) if product_context else '- нет'}\n\n"
         f"Инфо-страницы:\n{chr(10).join(page_context) if page_context else '- нет'}\n\n"
         f"Вопрос клиента: {body.question}"
     )

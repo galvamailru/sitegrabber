@@ -68,6 +68,8 @@ def _extract_links(base_url: str, html: str) -> list[str]:
         full = urljoin(base_url, href)
         p = urlparse(full)
         low_path = (p.path or "").lower()
+        if any(seg in low_path for seg in ["/ajax/", "/api/", "/bitrix/"]):
+            continue
         if low_path.endswith(non_html_ext):
             continue
         out.append(full)
@@ -589,6 +591,11 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
 
                 url, depth, parent_id = q.popleft()
                 normalized = url.split("#")[0].rstrip("/")
+                pnorm = urlparse(normalized)
+                low_path = (pnorm.path or "").lower()
+                if any(seg in low_path for seg in ["/ajax/", "/api/", "/bitrix/"]):
+                    _append_tree_node(tree_state, url=normalized, depth=depth, parent=parent_id, state="skipped")
+                    continue
                 if normalized in visited or depth > depth_limit:
                     continue
                 visited.add(normalized)
@@ -615,14 +622,17 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                 text = _strip_tags(html)
                 title = _extract_title(html)
                 image_candidates = _extract_images(normalized, html)
-                ai_struct = await _extract_structured_with_llm(
-                    client=client,
-                    project=project,
-                    page_url=normalized,
-                    title=title,
-                    text=text,
-                    image_candidates=image_candidates,
-                )
+                ai_struct = None
+                # Do not spend LLM budget on utility/technical endpoints.
+                if not any(seg in low_path for seg in ["/ajax/", "/api/", "/bitrix/"]):
+                    ai_struct = await _extract_structured_with_llm(
+                        client=client,
+                        project=project,
+                        page_url=normalized,
+                        title=title,
+                        text=text,
+                        image_candidates=image_candidates,
+                    )
                 page_type = (
                     ai_struct.get("page_type", "").lower()
                     if isinstance(ai_struct, dict)
@@ -987,6 +997,44 @@ async def regenerate_single_asset(asset_id: str) -> bool:
 
 async def publish_project(project_id: str) -> None:
     async with async_session_factory() as db:
+        project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+        if project:
+            products = (
+                await db.execute(select(Product).where(Product.site_project_id == project_id).order_by(Product.created_at.desc()).limit(500))
+            ).scalars().all()
+            specs_rows = (
+                await db.execute(
+                    select(ProductSpec.product_id, ProductSpec.key, ProductSpec.value)
+                    .join(Product, Product.id == ProductSpec.product_id)
+                    .where(Product.site_project_id == project_id)
+                    .order_by(ProductSpec.sort_order)
+                )
+            ).all()
+            by_product_specs: dict[str, list[str]] = {}
+            for r in specs_rows:
+                pid = str(r.product_id)
+                by_product_specs.setdefault(pid, [])
+                if len(by_product_specs[pid]) < 5:
+                    by_product_specs[pid].append(f"{r.key}: {r.value}")
+
+            lines = [
+                "Каталог продукции (актуальный перечень после публикации):",
+                "| Название | Slug | Цена от | Валюта | Ключевые характеристики |",
+                "|---|---|---:|---|---|",
+            ]
+            for p in products:
+                specs = "; ".join(by_product_specs.get(str(p.id), [])) or "-"
+                lines.append(
+                    f"| {(p.rewritten_name or p.name or '-').replace('|', '/')} "
+                    f"| {(p.slug or '-').replace('|', '/')} "
+                    f"| {p.price_from if p.price_from is not None else '-'} "
+                    f"| {(p.currency or 'RUB').replace('|', '/')} "
+                    f"| {specs.replace('|', '/')} |"
+                )
+            if len(lines) == 3:
+                lines.append("| - | - | - | - | Нет товаров |")
+            project.catalog_prompt_table = "\n".join(lines)[:120000]
+
         releases = (await db.execute(select(SiteRelease).where(SiteRelease.site_project_id == project_id))).scalars().all()
         for r in releases:
             r.is_active = False
