@@ -60,10 +60,10 @@
         >Стоп + публикация</button>
         <button hx-post="/admin/projects/{{ p.id }}/run-all" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#0f766e">Run all</button>
         <button hx-post="/admin/projects/{{ p.id }}/rewrite" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Рерайтинг</button>
-        <button hx-post="/admin/projects/{{ p.id }}/images" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Генерация изображений</button>
         <button hx-post="/admin/projects/{{ p.id }}/price-check" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#7c3aed">Проверка цен</button>
         <button hx-post="/admin/projects/{{ p.id }}/publish" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Опубликовать</button>
         <a href="/admin/projects/{{ p.id }}">Подробнее</a>
+        <a href="/admin/projects/{{ p.id }}/images-manager">Изображения</a>
         <a href="/admin/projects/{{ p.id }}/crawl-tree">Live-карта</a>
         <a href="/admin/projects/{{ p.id }}/price-monitor">Мониторинг цен</a>
         <a href="/admin/projects/{{ p.id }}/cms">CMS</a>

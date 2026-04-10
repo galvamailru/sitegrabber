@@ -14,6 +14,7 @@
 <div class="wrap">
   <a href="/admin">← Назад</a>
   <a href="/admin/projects/{{ project.id }}/cms" style="margin-left:12px;">Открыть CMS редактор</a>
+  <a href="/admin/projects/{{ project.id }}/images-manager" style="margin-left:12px;">Изображения</a>
   <a href="/admin/projects/{{ project.id }}/filters" style="margin-left:12px;">Настройка фильтров каталога</a>
   <a href="/admin/projects/{{ project.id }}/crawl-tree" style="margin-left:12px;">Live-карта обхода</a>
   <a href="/admin/projects/{{ project.id }}/price-monitor" style="margin-left:12px;">Мониторинг цен</a>
@@ -74,30 +75,6 @@
       </div>
     {% else %}
       <div>Недостаточно данных по истории цен (нужны минимум 2 прохода парсинга).</div>
-    {% endfor %}
-  </div>
-  <div class="card">
-    <h3>Проблемные изображения</h3>
-    {% for a in failed_assets %}
-      <div style="border-top:1px solid #eee;padding-top:10px;margin-top:10px;">
-        <div><small>{{ a.id }}</small></div>
-        <div>{{ a.source_url }}</div>
-        <div>Причина: {{ a.failure_reason }}</div>
-        <form method="post" action="/admin/assets/{{ a.id }}/retry" style="display:inline;">
-          <input type="hidden" name="project_id" value="{{ project.id }}">
-          <button type="submit">Повторить генерацию</button>
-        </form>
-        <form method="post" action="/admin/assets/{{ a.id }}/use-original" style="display:inline;">
-          <input type="hidden" name="project_id" value="{{ project.id }}">
-          <button type="submit">Оставить оригинал</button>
-        </form>
-        <form method="post" action="/admin/assets/{{ a.id }}/delete" style="display:inline;">
-          <input type="hidden" name="project_id" value="{{ project.id }}">
-          <button type="submit">Удалить</button>
-        </form>
-      </div>
-    {% else %}
-      <div>Нет проблемных изображений</div>
     {% endfor %}
   </div>
 </div>

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Изображения — {{ project.name }}</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f5f7fa; margin: 0; color: #111; }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 24px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    button { padding: 10px 14px; border: 0; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/admin/projects/{{ project.id }}">← Назад к проекту</a>
+  <h1>Изображения: {{ project.name }}</h1>
+  <div class="card">
+    <p><b>Статус:</b> {{ project.image_status }}</p>
+    <p><b>Всего assets:</b> {{ assets_total }} | <b>Сгенерировано:</b> {{ generated_total }} | <b>Ошибок:</b> {{ failed_assets|length }}</p>
+    <button hx-post="/admin/projects/{{ project.id }}/images" hx-target="#task" hx-swap="innerHTML">Запустить генерацию изображений</button>
+    <div id="task" style="margin-top:8px;"></div>
+  </div>
+
+  <div class="card">
+    <h3>Проблемные изображения</h3>
+    {% for a in failed_assets %}
+      <div style="border-top:1px solid #eee;padding-top:10px;margin-top:10px;">
+        <div><small>{{ a.id }}</small></div>
+        <div>{{ a.source_url }}</div>
+        <div>Причина: {{ a.failure_reason }}</div>
+        <form method="post" action="/admin/assets/{{ a.id }}/retry" style="display:inline;">
+          <input type="hidden" name="project_id" value="{{ project.id }}">
+          <button type="submit">Повторить генерацию</button>
+        </form>
+        <form method="post" action="/admin/assets/{{ a.id }}/use-original" style="display:inline;">
+          <input type="hidden" name="project_id" value="{{ project.id }}">
+          <button type="submit">Оставить оригинал</button>
+        </form>
+        <form method="post" action="/admin/assets/{{ a.id }}/delete" style="display:inline;">
+          <input type="hidden" name="project_id" value="{{ project.id }}">
+          <button type="submit">Удалить</button>
+        </form>
+      </div>
+    {% else %}
+      <div>Нет проблемных изображений</div>
+    {% endfor %}
+  </div>
+</div>
+</body>
+</html>

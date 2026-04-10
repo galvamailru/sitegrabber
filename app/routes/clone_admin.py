@@ -90,9 +90,11 @@ async def stop_clone(project_id: UUID, publish_partial: bool = Form(False), db: 
     project.crawl_stop_requested = True
     project.crawl_publish_on_stop = publish_partial
     await db.commit()
-    if publish_partial and project.crawl_status != "running":
+    # Publish partial snapshot immediately so storefront becomes available right away.
+    # crawl_publish_on_stop remains set to keep behavior consistent if worker catches stop later.
+    if publish_partial:
         task = publish_site_task.delay(str(project_id))
-        return JSONResponse({"status": "published_partial_immediately", "task_id": task.id})
+        return JSONResponse({"status": "stop_requested_and_publish_queued", "task_id": task.id})
     return JSONResponse({"status": "stop_requested", "publish_partial": publish_partial})
 
 
@@ -106,6 +108,33 @@ async def run_rewrite(project_id: UUID):
 async def run_images(project_id: UUID):
     task = generate_images_task.delay(str(project_id))
     return JSONResponse({"task_id": task.id, "status": "queued"})
+
+
+@router.get("/admin/projects/{project_id}/images-manager", response_class=HTMLResponse)
+async def images_manager(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return HTMLResponse("Project not found", status_code=404)
+    assets_total = await db.scalar(select(func.count(Asset.id)).where(Asset.site_project_id == project_id)) or 0
+    generated_total = await db.scalar(
+        select(func.count(Asset.id)).where(Asset.site_project_id == project_id, Asset.generated.is_(True))
+    ) or 0
+    failed_assets = (
+        await db.execute(
+            select(Asset).where(Asset.site_project_id == project_id, Asset.generation_failed.is_(True)).order_by(desc(Asset.created_at))
+        )
+    ).scalars().all()
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/images_manager.html",
+        context={
+            "request": request,
+            "project": project,
+            "assets_total": assets_total,
+            "generated_total": generated_total,
+            "failed_assets": failed_assets,
+        },
+    )
 
 
 @router.post("/admin/projects/{project_id}/publish")
@@ -360,11 +389,6 @@ async def project_details(project_id: UUID, request: Request, db: AsyncSession =
     pages_count = await db.scalar(select(func.count(Page.id)).where(Page.site_project_id == project_id))
     products_count = await db.scalar(select(func.count(Product.id)).where(Product.site_project_id == project_id))
     releases = (await db.execute(select(SiteRelease).where(SiteRelease.site_project_id == project_id).order_by(desc(SiteRelease.created_at)))).scalars().all()
-    failed_assets = (
-        await db.execute(
-            select(Asset).where(Asset.site_project_id == project_id, Asset.generation_failed.is_(True)).order_by(desc(Asset.created_at))
-        )
-    ).scalars().all()
     ai_pages = await db.scalar(
         select(func.count(Page.id)).where(Page.site_project_id == project_id, Page.extraction_source == "ai")
     )
@@ -429,7 +453,6 @@ async def project_details(project_id: UUID, request: Request, db: AsyncSession =
             "pages_count": pages_count or 0,
             "products_count": products_count or 0,
             "releases": releases,
-            "failed_assets": failed_assets,
             "ai_pages": ai_pages or 0,
             "fallback_pages": fallback_pages or 0,
             "recent_pages": recent_pages,
@@ -441,7 +464,7 @@ async def project_details(project_id: UUID, request: Request, db: AsyncSession =
 @router.post("/admin/assets/{asset_id}/retry")
 async def retry_asset(asset_id: UUID, project_id: UUID = Form(...)):
     task = generate_single_image_task.delay(str(asset_id), str(project_id))
-    return RedirectResponse(f"/admin/projects/{project_id}", status_code=303)
+    return RedirectResponse(f"/admin/projects/{project_id}/images-manager", status_code=303)
 
 
 @router.post("/admin/assets/{asset_id}/use-original")
@@ -453,7 +476,7 @@ async def use_original_asset(asset_id: UUID, project_id: UUID = Form(...), db: A
         asset.generated = True
         asset.failure_reason = None
         await db.commit()
-    return RedirectResponse(f"/admin/projects/{project_id}", status_code=303)
+    return RedirectResponse(f"/admin/projects/{project_id}/images-manager", status_code=303)
 
 
 @router.post("/admin/assets/{asset_id}/delete")
@@ -462,7 +485,7 @@ async def delete_asset(asset_id: UUID, project_id: UUID = Form(...), db: AsyncSe
     if asset:
         await db.delete(asset)
         await db.commit()
-    return RedirectResponse(f"/admin/projects/{project_id}", status_code=303)
+    return RedirectResponse(f"/admin/projects/{project_id}/images-manager", status_code=303)
 
 
 @router.get("/admin/projects/{project_id}/cms", response_class=HTMLResponse)
