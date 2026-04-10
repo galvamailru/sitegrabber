@@ -2,6 +2,7 @@ from app.celery_app import celery
 from app.clone_pipeline import (
     check_prices_project,
     crawl_project,
+    discover_project_strategy,
     publish_project,
     regenerate_images,
     regenerate_single_asset,
@@ -121,4 +122,16 @@ def check_prices_task(project_id: str):
         return result
     except Exception as e:
         run_async(_set_stage(project_id, "price_check_status", "failed", str(e)))
+        raise
+
+
+@celery.task(name="discover_strategy_task")
+def discover_strategy_task(project_id: str):
+    run_async(_set_stage(project_id, "crawl_status", "discovering"))
+    try:
+        result = run_async(discover_project_strategy(project_id))
+        run_async(_set_stage(project_id, "crawl_status", "idle"))
+        return result
+    except Exception as e:
+        run_async(_set_stage(project_id, "crawl_status", "failed", str(e)))
         raise

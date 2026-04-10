@@ -48,6 +48,7 @@
       <div style="border-top:1px solid #eee; padding-top:12px; margin-top:12px;">
         <b>{{ p.name }}</b> — {{ p.source_url }}<br>
         <small>ID: {{ p.id }}</small><br><br>
+        <div class="meta"><b>Основные действия:</b></div>
         <button hx-post="/admin/projects/{{ p.id }}/clone" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Клонировать</button>
         <button hx-post="/admin/projects/{{ p.id }}/clone/resume" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#0284c7">Возобновить</button>
         <button hx-post="/admin/projects/{{ p.id }}/clone/stop" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#b91c1c">Стоп</button>
@@ -59,14 +60,17 @@
           style="background:#be123c"
         >Стоп + публикация</button>
         <button hx-post="/admin/projects/{{ p.id }}/run-all" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#0f766e">Run all</button>
+        <button hx-post="/admin/projects/{{ p.id }}/publish" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Опубликовать</button>
         <button hx-post="/admin/projects/{{ p.id }}/rewrite" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Рерайтинг</button>
         <button hx-post="/admin/projects/{{ p.id }}/price-check" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#7c3aed">Проверка цен</button>
-        <button hx-post="/admin/projects/{{ p.id }}/publish" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Опубликовать</button>
-        <a href="/admin/projects/{{ p.id }}">Подробнее</a>
-        <a href="/admin/projects/{{ p.id }}/images-manager">Изображения</a>
-        <a href="/admin/projects/{{ p.id }}/crawl-tree">Live-карта</a>
-        <a href="/admin/projects/{{ p.id }}/price-monitor">Мониторинг цен</a>
-        <a href="/admin/projects/{{ p.id }}/cms">CMS</a>
+        <div class="meta" style="margin-top:8px;"><b>Инструменты:</b>
+          <a href="/admin/projects/{{ p.id }}">Подробнее</a> ·
+          <a href="/admin/projects/{{ p.id }}/cms">CMS</a> ·
+          <a href="/admin/projects/{{ p.id }}/images-manager">Изображения</a> ·
+          <a href="/admin/projects/{{ p.id }}/crawl-tree">Live-карта</a> ·
+          <a href="/admin/projects/{{ p.id }}/strategy-debug">Strategy Debug</a> ·
+          <a href="/admin/projects/{{ p.id }}/price-monitor">Мониторинг цен</a>
+        </div>
         <div id="task-{{ p.id }}"></div>
         <div class="meta" id="meta-{{ p.id }}">Страницы: 0 | Товары: 0 | Изображения: 0</div>
         <div class="meta" id="stage-{{ p.id }}">Стадии: crawl=idle rewrite=idle image=idle publish=idle price_check=idle</div>
@@ -103,7 +107,8 @@
       if (meta) meta.textContent = `Страницы: ${d.pages_total} | Товары: ${d.products_total} | Изображения: ${d.assets_total}`;
       if (imgmeta) imgmeta.textContent = `Сгенерировано: ${d.assets_generated}, ошибок: ${d.assets_failed}`;
       if (crawlmeta) crawlmeta.textContent = `Клонирование: ${d.crawl_processed || 0}/${d.crawl_discovered || 0}${d.crawl_last_url ? ' | current=' + d.crawl_last_url : ''}`;
-      if (stage) stage.textContent = `Стадии: crawl=${d.crawl_status} rewrite=${d.rewrite_status} image=${d.image_status} publish=${d.publish_status} price_check=${d.price_check_status || 'idle'}${d.crawl_stop_requested ? ' | stop requested' : ''}${d.last_error ? ' | err=' + d.last_error : ''}`;
+      const strategyMode = (d.crawl_strategy && d.crawl_strategy.mode) ? d.crawl_strategy.mode : 'n/a';
+      if (stage) stage.textContent = `Стадии: crawl=${d.crawl_status} rewrite=${d.rewrite_status} image=${d.image_status} publish=${d.publish_status} price_check=${d.price_check_status || 'idle'} | strategy=${strategyMode}${d.crawl_stop_requested ? ' | stop requested' : ''}${d.last_error ? ' | err=' + d.last_error : ''}`;
       if (tree && Array.isArray(d.crawl_tree_nodes)) {
         tree.textContent = d.crawl_tree_nodes
           .map((n) => `${' '.repeat(Math.max((n.depth || 0) * 2, 0))}- [${n.state || 'n/a'}] ${n.url || ''}`)

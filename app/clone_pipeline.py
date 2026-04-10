@@ -76,6 +76,158 @@ def _extract_links(base_url: str, html: str) -> list[str]:
     return out
 
 
+def _is_product_like_path(path: str) -> bool:
+    p = (path or "/").lower().rstrip("/") or "/"
+    product_patterns = [
+        r"/product",
+        r"/products",
+        r"/catalog",
+        r"/item",
+        r"/detail",
+        r"/card",
+        r"/shop",
+        r"/goods",
+    ]
+    if any(re.search(pattern, p) for pattern in product_patterns):
+        return True
+    if re.search(r"/\d{4,}", p):
+        return True
+    return False
+
+
+def _is_service_like_path(path: str) -> bool:
+    p = (path or "/").lower()
+    service_tokens = [
+        "/service",
+        "/services",
+        "/about",
+        "/company",
+        "/contact",
+        "/delivery",
+        "/payment",
+        "/warranty",
+        "/faq",
+        "/blog",
+        "/news",
+    ]
+    return any(tok in p for tok in service_tokens)
+
+
+def _classify_by_rules(url_path: str, title: str | None, text: str) -> str | None:
+    p = (url_path or "/").lower()
+    t = ((title or "") + " " + text[:2000]).lower()
+    product_tokens = ["цена", "руб", "характерист", "модель", "артикул", "vin", "sku", "л.с.", "двигател"]
+    content_tokens = ["о компании", "контакты", "доставка", "оплата", "новости", "статья", "блог", "услуги"]
+    product_score = sum(1 for tok in product_tokens if tok in t) + (2 if _is_product_like_path(p) else 0)
+    content_score = sum(1 for tok in content_tokens if tok in t) + (2 if _is_service_like_path(p) else 0)
+    if product_score >= max(content_score + 1, 2):
+        return "product"
+    if content_score >= max(product_score + 1, 2):
+        return "content"
+    return None
+
+
+async def _discover_site_strategy(client: httpx.AsyncClient, start_url: str, host: str) -> dict[str, Any]:
+    strategy: dict[str, Any] = {
+        "mode": "mixed",
+        "product_url_patterns": [],
+        "service_url_patterns": [],
+        "exclude_path_tokens": ["/ajax/", "/api/", "/bitrix/"],
+    }
+    samples: list[tuple[str, str, str]] = []
+    queue = deque([start_url])
+    seen: set[str] = set()
+    while queue and len(samples) < 20:
+        u = queue.popleft()
+        if u in seen:
+            continue
+        seen.add(u)
+        try:
+            r = await _request_with_retry(client, "GET", u)
+            if r.status_code != 200 or "text/html" not in r.headers.get("content-type", ""):
+                continue
+            html = r.text
+            path = urlparse(u).path or "/"
+            txt = _strip_tags(html)
+            samples.append((path, _extract_title(html) or "", txt))
+            for link in _extract_links(u, html):
+                p = urlparse(link)
+                if p.netloc != host:
+                    continue
+                if len(queue) >= 100:
+                    break
+                queue.append(f"{p.scheme}://{p.netloc}{p.path}")
+        except Exception:
+            continue
+
+    product_like = 0
+    service_like = 0
+    detail_like = 0
+    for path, title, txt in samples:
+        if _is_product_like_path(path) or _classify_by_rules(path, title, txt) == "product":
+            product_like += 1
+        if _is_service_like_path(path) or _classify_by_rules(path, title, txt) == "content":
+            service_like += 1
+        if re.search(r"/detail/\d+/?$", path.lower().rstrip("/") + "/"):
+            detail_like += 1
+
+    if product_like >= max(service_like * 2, 4):
+        strategy["mode"] = "catalog-first"
+    elif service_like >= max(product_like * 2, 4):
+        strategy["mode"] = "content-first"
+    else:
+        strategy["mode"] = "mixed"
+
+    if detail_like >= 2:
+        strategy["product_url_patterns"].append(r"^/.*/detail/\d+/?$")
+    strategy["service_url_patterns"] = [r"^/(about|company|contacts?|service|services|delivery|payment|news|blog)(/.*)?$"]
+    strategy["samples"] = {"total": len(samples), "product_like": product_like, "service_like": service_like}
+    return strategy
+
+
+async def discover_project_strategy(project_id: str) -> dict[str, Any]:
+    async with async_session_factory() as db:
+        project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+        if not project:
+            return {"mode": "mixed", "samples": {"total": 0, "product_like": 0, "service_like": 0}}
+        start = project.source_url.rstrip("/")
+        host = urlparse(start).netloc
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            strategy = await _discover_site_strategy(client, start, host)
+        project.crawl_strategy_state = _json_copy(strategy)
+        await db.commit()
+        return strategy
+
+
+def _match_any_regex(path: str, patterns: list[str]) -> bool:
+    return any(re.search(p, path) for p in patterns)
+
+
+def _should_enqueue_link(start_host: str, link_host: str, link_path: str, strategy: dict[str, Any] | None = None) -> bool:
+    if link_host != start_host:
+        return False
+    path = (link_path or "/").rstrip("/") or "/"
+    low_path = path.lower()
+    if strategy:
+        for token in strategy.get("exclude_path_tokens", []):
+            if token in low_path:
+                return False
+        mode = strategy.get("mode", "mixed")
+        product_patterns = strategy.get("product_url_patterns", [])
+        service_patterns = strategy.get("service_url_patterns", [])
+        if mode == "catalog-first":
+            return (
+                path == "/"
+                or _match_any_regex(path, product_patterns)
+                or _match_any_regex(path, service_patterns)
+                or _is_product_like_path(path)
+                or _is_service_like_path(path)
+            )
+        if mode == "content-first":
+            return path == "/" or _match_any_regex(path, service_patterns) or _is_service_like_path(path)
+    return True
+
+
 def _extract_title(html: str) -> str | None:
     m = re.search(r"<title>(.*?)</title>", html, flags=re.IGNORECASE | re.DOTALL)
     if not m:
@@ -528,6 +680,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
         q: deque[tuple[str, int, str | None]]
         visited: set[str]
         tree_state: dict[str, Any]
+        strategy_state: dict[str, Any]
         created = project.crawl_processed or 0
 
         can_resume = (
@@ -548,6 +701,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
             )
             visited = set(project.crawl_visited_state.get("items", []))
             tree_state = project.crawl_tree_state if isinstance(project.crawl_tree_state, dict) else {"nodes": []}
+            strategy_state = project.crawl_strategy_state if isinstance(project.crawl_strategy_state, dict) else {"mode": "mixed"}
             project.crawl_status = "running"
         else:
             await db.execute(delete(Asset).where(Asset.site_project_id == project.id))
@@ -563,11 +717,19 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
             q = deque([(start, 0, None)])
             visited = set()
             tree_state = {"nodes": [{"url": start, "depth": 0, "parent": None, "state": "queued"}]}
+            strategy_state = {"mode": "mixed"}
             created = 0
         project.crawl_stop_requested = False
         await db.commit()
 
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            if not can_resume:
+                try:
+                    strategy_state = await _discover_site_strategy(client, start, host)
+                except Exception:
+                    strategy_state = {"mode": "mixed"}
+                project.crawl_strategy_state = _json_copy(strategy_state)
+                await db.commit()
             while q:
                 project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
                 project.crawl_queue_state = {
@@ -575,6 +737,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                 }
                 project.crawl_visited_state = {"items": list(visited)[:1000]}
                 project.crawl_tree_state = _json_copy(tree_state)
+                project.crawl_strategy_state = _json_copy(strategy_state)
                 await db.commit()
                 await db.refresh(project, attribute_names=["crawl_stop_requested", "crawl_publish_on_stop"])
                 if project.crawl_stop_requested:
@@ -634,10 +797,10 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                         image_candidates=image_candidates,
                     )
                 page_type = (
-                    ai_struct.get("page_type", "").lower()
-                    if isinstance(ai_struct, dict)
-                    else await _classify_page(client, project, title, text)
+                    ai_struct.get("page_type", "").lower() if isinstance(ai_struct, dict) else None
                 )
+                if not page_type:
+                    page_type = _classify_by_rules(path, title, text) or await _classify_page(client, project, title, text)
                 extraction_source = "ai" if isinstance(ai_struct, dict) else "fallback"
                 if page_type not in {"product", "content"}:
                     logger.warning(
@@ -773,6 +936,8 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                 for link in _extract_links(normalized, html):
                     p = urlparse(link)
                     if p.netloc != host:
+                        continue
+                    if not _should_enqueue_link(host, p.netloc, p.path, strategy_state):
                         continue
                     child_url = f"{p.scheme}://{p.netloc}{p.path}"
                     q.append((child_url, depth + 1, str(page.id)))

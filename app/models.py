@@ -78,6 +78,7 @@ class SiteProject(Base):
     crawl_queue_state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     crawl_visited_state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     crawl_tree_state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    crawl_strategy_state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     crawl_last_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     rewrite_status: Mapped[str] = mapped_column(String(32), default="idle", nullable=False)
     image_status: Mapped[str] = mapped_column(String(32), default="idle", nullable=False)

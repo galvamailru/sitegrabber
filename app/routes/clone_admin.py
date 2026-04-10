@@ -15,6 +15,7 @@ from app.tasks import (
     check_prices_task,
     crawl_site_task,
     crawl_site_resume_task,
+    discover_strategy_task,
     full_clone_pipeline_task,
     generate_images_task,
     generate_single_image_task,
@@ -265,6 +266,7 @@ async def project_progress(project_id: UUID, db: AsyncSession = Depends(get_db))
             "crawl_discovered": project.crawl_discovered if project else 0,
             "crawl_stop_requested": project.crawl_stop_requested if project else False,
             "crawl_last_url": project.crawl_last_url if project else None,
+            "crawl_strategy": project.crawl_strategy_state if project else None,
             "crawl_tree_nodes": (project.crawl_tree_state or {}).get("nodes", [])[-60:] if project else [],
             "rewrite_status": project.rewrite_status if project else "idle",
             "image_status": project.image_status if project else "idle",
@@ -294,6 +296,25 @@ async def crawl_tree_page(project_id: UUID, request: Request, db: AsyncSession =
         name="admin/crawl_tree.html",
         context={"request": request, "project": project},
     )
+
+
+@router.get("/admin/projects/{project_id}/strategy-debug", response_class=HTMLResponse)
+async def strategy_debug_page(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return HTMLResponse("Project not found", status_code=404)
+    strategy = project.crawl_strategy_state or {}
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/strategy_debug.html",
+        context={"request": request, "project": project, "strategy": strategy},
+    )
+
+
+@router.post("/admin/projects/{project_id}/strategy/discover")
+async def strategy_discover(project_id: UUID):
+    task = discover_strategy_task.delay(str(project_id))
+    return JSONResponse({"task_id": task.id, "status": "queued_strategy_discovery"})
 
 
 @router.get("/admin/projects/{project_id}/price-monitor", response_class=HTMLResponse)
