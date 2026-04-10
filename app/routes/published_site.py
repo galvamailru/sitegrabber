@@ -1,9 +1,6 @@
 import html
 import json
 from uuid import uuid4
-from urllib.parse import urljoin
-
-import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from sqlalchemy import select
@@ -178,7 +175,6 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
     if not active:
         return HTMLResponse("<h1>No published site yet</h1><p>Open /admin to start cloning.</p>", status_code=200)
     project = await db.scalar(select(SiteProject).where(SiteProject.id == active.site_project_id))
-    source_root = project.source_url.rstrip("/") if project else ""
     page = await db.scalar(
         select(Page).where(Page.site_project_id == active.site_project_id, Page.url_path == path).limit(1)
     )
@@ -315,20 +311,5 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
         response = HTMLResponse(_html_shell(page.title or "Страница", body, site_project_id=str(active.site_project_id)))
         response.set_cookie("cart_session", _get_session_id(request), max_age=60 * 60 * 24 * 30)
         return response
-    if path == "/":
-        first_page = await db.scalar(
-            select(Page).where(Page.site_project_id == active.site_project_id).order_by(Page.depth, Page.created_at).limit(1)
-        )
-        if first_page and first_page.transformed_html:
-            return HTMLResponse(first_page.transformed_html)
-    # Fallback proxy for missed static/resources to preserve layout.
-    if source_root:
-        try:
-            upstream_url = urljoin(f"{source_root}/", full_path)
-            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-                r = await client.get(upstream_url)
-            content_type = r.headers.get("content-type", "text/plain")
-            return Response(content=r.content, media_type=content_type, status_code=r.status_code)
-        except Exception:
-            pass
+    # No upstream proxy fallback: published storefront must be DB-driven only.
     return HTMLResponse(_html_shell("404", "<h1>404</h1>", site_project_id=str(active.site_project_id)), status_code=404)
