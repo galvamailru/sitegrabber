@@ -31,9 +31,7 @@
       <label>Глубина обхода</label>
       <input name="crawl_depth" type="number" min="1" max="6" value="2">
       <label>Правило отбора при парсинге (LLM, опционально)</label>
-      <textarea name="crawl_collect_terms" rows="3" placeholder="Например: только легковые автомобили и комплектации; не услуги СТО и кредит.&#10;Или: только товары-радиаторы отопления, не монтаж и доставка.&#10;Пусто = без отбора по смыслу (как раньше)."></textarea>
-      <label>Только URL с префикса (опционально)</label>
-      <input name="crawl_url_prefix" type="url" placeholder="https://site.ru/catalog-used/detail">
+      <textarea name="crawl_collect_terms" rows="3" placeholder="Например: только легковые автомобили и комплектации; не услуги СТО и кредит.&#10;Или: только товары-радиаторы отопления, не монтаж и доставка.&#10;Пусто = цель сбора задаётся только смыслом страницы (LLM решает should_collect)."></textarea>
       <label>Промпт дизайна</label>
       <textarea name="design_prompt" rows="3"></textarea>
       <label>Глобальный промпт изображений</label>

@@ -92,23 +92,16 @@ def _normalize_crawl_url(url: str) -> str:
     return norm
 
 
-def _crawl_url_prefix_norm(raw: str | None) -> str | None:
-    s = (raw or "").strip()
-    if not s:
-        return None
-    return _normalize_crawl_url(s)
-
-
-def _url_matches_crawl_prefix(normalized_url: str, prefix_norm: str | None) -> bool:
-    """URL считается внутри префикса: совпадение или продолжение пути (? или / сразу после префикса)."""
-    if not prefix_norm:
-        return True
-    if normalized_url == prefix_norm:
-        return True
-    if len(normalized_url) <= len(prefix_norm) or not normalized_url.startswith(prefix_norm):
-        return False
-    boundary = normalized_url[len(prefix_norm)]
-    return boundary in "/?"
+def _basic_link_allowed(link_host: str, link_path: str, strategy: dict[str, Any] | None) -> bool:
+    """Технический фильтр ссылок (без семантики): тот же хост проверяется снаружи."""
+    low_path = (link_path or "/").lower()
+    tokens = ["/ajax/", "/api/", "/bitrix/"]
+    if strategy and isinstance(strategy.get("exclude_path_tokens"), list):
+        tokens = [str(t).lower() for t in strategy["exclude_path_tokens"] if t]
+    for token in tokens:
+        if token in low_path:
+            return False
+    return True
 
 
 def _is_product_like_path(path: str) -> bool:
@@ -601,26 +594,46 @@ def _try_parse_json(text: str) -> dict | None:
         return None
 
 
-def _collection_rule_ok_from_ai(ai_struct: dict | None, rule_active: bool) -> tuple[bool, str]:
-    """Если правило задано и есть ответ ИИ — читаем collection_rule_satisfied; иначе пропускаем страницу."""
-    if not rule_active:
-        return True, ""
-    if not isinstance(ai_struct, dict):
-        return True, "no_ai_response"
+def _truthy_json_flag(val: Any, default: bool) -> bool:
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes")
+    if isinstance(val, (int, float)):
+        return val != 0
+    return default
+
+
+def _collection_rule_satisfied_from_ai(ai_struct: dict) -> tuple[bool, str]:
     raw = ai_struct.get("collection_rule_satisfied")
     reason = str(ai_struct.get("collection_rule_reason") or ai_struct.get("rule_reason") or "")[:400]
     if raw is None:
         logger.warning("collection_rule_satisfied missing when rule active; excluding page")
         return False, "missing_satisfied_flag"
-    if isinstance(raw, bool):
-        ok = raw
-    elif isinstance(raw, str):
-        ok = raw.strip().lower() in ("true", "1", "yes")
-    elif isinstance(raw, (int, float)):
-        ok = raw != 0
-    else:
-        ok = False
+    ok = _truthy_json_flag(raw, False)
     return ok, reason
+
+
+def _page_should_be_persisted(ai_struct: dict | None, rule_active: bool) -> tuple[bool, str]:
+    """
+    Сохранять страницу в БД: при ответе LLM учитываем should_collect;
+    при заданном правиле сбора — дополнительно collection_rule_satisfied.
+    """
+    if not isinstance(ai_struct, dict):
+        if rule_active:
+            return False, "no_ai_response"
+        return True, ""
+
+    if not _truthy_json_flag(ai_struct.get("should_collect"), True):
+        reason = str(ai_struct.get("should_collect_reason") or "should_collect=false")[:400]
+        return False, reason
+
+    if not rule_active:
+        return True, ""
+
+    return _collection_rule_satisfied_from_ai(ai_struct)
 
 
 async def _extract_structured_with_llm(
@@ -665,16 +678,25 @@ async def _extract_structured_with_llm(
         )
     else:
         rule_section = (
-            "Правило отбора не задано: всегда укажи "
-            '"collection_rule_satisfied": true и "collection_rule_reason": "правило не задано".\n\n'
+            "Правило отбора в тексте не задано: укажи "
+            '"collection_rule_satisfied": true и "collection_rule_reason": "правило не задано".\n'
+            "Поле should_collect всё равно обязательно (см. ниже).\n\n"
         )
 
     prompt = (
         "Проанализируй HTML-текст страницы и верни один JSON-объект без пояснений до или после него.\n\n"
         f"{rule_section}"
+        "Обязательные поля решения об импорте в CMS:\n"
+        '- "should_collect": true или false — стоит ли сохранять эту страницу в базу клона '
+        "(целевая карточка товара, содержательная инфо-страница по теме каталога). "
+        "false для чистой оболочки (меню, фильтры без списка, дубли навигации), логина, корзины, "
+        "пустых хабов, офтоп-новостей и сервисных страниц вне темы.\n"
+        '- "should_collect_reason": кратко по-русски.\n\n'
         "Схема JSON:\n"
         "{\n"
         '  "page_type": "product" | "content",\n'
+        '  "should_collect": true,\n'
+        '  "should_collect_reason": "...",\n'
         '  "collection_rule_satisfied": true,\n'
         '  "collection_rule_reason": "...",\n'
         '  "page_title": "лучший заголовок страницы",\n'
@@ -694,7 +716,8 @@ async def _extract_structured_with_llm(
         "- Если информационная: page_type=content, заполни content_page; product оставь пустым или {}.\n"
         "- specs — только реальные параметры товара, без меню и контактов.\n"
         "- gallery — только URL изображений товара; по возможности выбирай из IMAGE_CANDIDATES подходящие.\n"
-        "- price_from число или null, если цены нет.\n\n"
+        "- price_from число или null, если цены нет.\n"
+        "- При сомнении для should_collect выбирай false.\n\n"
         f"URL: {page_url}\nTITLE (из HTML): {title or ''}\n"
         f"IMAGE_CANDIDATES (до 40): {image_candidates[:40]}\n"
         f"TEXT:\n{text[:10000]}"
@@ -716,11 +739,12 @@ async def _extract_structured_with_llm(
         parsed = _try_parse_json(content)
         if isinstance(parsed, dict):
             logger.info(
-                "ai_call_done purpose=extract_structured url=%s page_type=%s satisfied=%s reason=%r",
+                "ai_call_done purpose=extract_structured url=%s page_type=%s collect=%s satisfied=%s reason=%r",
                 page_url,
                 str(parsed.get("page_type", "")),
+                str(parsed.get("should_collect", "")),
                 str(parsed.get("collection_rule_satisfied", "")),
-                str(parsed.get("collection_rule_reason", ""))[:200],
+                str(parsed.get("should_collect_reason", parsed.get("collection_rule_reason", "")))[:200],
             )
             return parsed
         logger.warning(
@@ -803,11 +827,82 @@ def _json_copy(obj: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(obj, ensure_ascii=False))
 
 
-def _enqueue_outbound_links(
+async def _llm_select_follow_links(
+    client: httpx.AsyncClient,
     *,
+    page_url: str,
+    title: str | None,
+    text: str,
+    candidate_urls: list[str],
+    collect_rule: str | None,
+) -> list[str] | None:
+    """LLM выбирает подмножество ссылок для обхода; None = сбой парсинга, использовать эвристику."""
+    if not settings.DEEPSEEK_API_KEY or not candidate_urls:
+        return None
+    rule_line = ""
+    if (collect_rule or "").strip():
+        rule_line = f"ПРАВИЛО СБОРА (что нужно в итоговом каталоге/сайте):\n{collect_rule.strip()}\n\n"
+    payload = {
+        "PAGE_URL": page_url,
+        "TITLE": title or "",
+        "TEXT_SNIPPET": text[:3500],
+        "CANDIDATE_LINKS": candidate_urls[:80],
+    }
+    prompt = (
+        f"{rule_line}"
+        "Ты настраиваешь краулер. Нужно выбрать, по каким ссылкам с этой страницы продолжать обход (тот же хост).\n"
+        "Верни строго один JSON без markdown и комментариев:\n"
+        '{"follow":["URL1","URL2",...]}\n'
+        "Каждый элемент follow должен ТОЧНО совпадать с одной строкой из CANDIDATE_LINKS.\n"
+        "Включай ссылки на целевые карточки товаров/позиций, листинги и пагинацию каталога, разделы по теме правила. "
+        "Не включай: личный кабинет, корзину, оформление заказа, служебные формы, явный офтоп, дубли меню без контента.\n"
+        "Если сомневаешься — не включай. Не больше 40 URL. Пустой follow допустим.\n\n"
+        f"{json.dumps(payload, ensure_ascii=False)}"
+    )
+    try:
+        r = await _request_with_retry(
+            client,
+            "POST",
+            f"{settings.LLM_URL.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}"},
+            json={
+                "model": settings.DEEPSEEK_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+            },
+            timeout=_LLM_HTTP_TIMEOUT,
+        )
+        content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+        parsed = _try_parse_json(content)
+        if not isinstance(parsed, dict):
+            return None
+        raw = parsed.get("follow")
+        if not isinstance(raw, list):
+            return None
+        out: list[str] = []
+        for x in raw[:40]:
+            if isinstance(x, str) and x.strip():
+                out.append(x.strip())
+        logger.info(
+            "ai_call_done purpose=select_follow_links page=%s picked=%d candidates=%d",
+            page_url,
+            len(out),
+            len(candidate_urls),
+        )
+        return out
+    except Exception:
+        logger.exception("ai_call_error purpose=select_follow_links page=%s", page_url)
+        return None
+
+
+async def _enqueue_outbound_links(
+    *,
+    client: httpx.AsyncClient,
     normalized: str,
     html: str,
     host: str,
+    title: str | None,
+    text: str,
     strategy_state: dict[str, Any],
     depth: int,
     parent_for_children: str | None,
@@ -815,18 +910,58 @@ def _enqueue_outbound_links(
     enqueued: set[str],
     q: deque[tuple[str, int, str | None]],
     tree_state: dict[str, Any],
-    url_prefix_norm: str | None = None,
+    collect_rule: str | None,
 ) -> None:
-    """Дочерние URL в очередь; parent_for_children — id последней **сохранённой** страницы (или None)."""
+    """Дочерние URL в очередь; при DEEPSEEK_API_KEY направление обхода задаёт LLM, иначе — стратегия/эвристики."""
+    candidates_norm: list[str] = []
+    seen_c: set[str] = set()
     for link in _extract_links(normalized, html):
         p = urlparse(link)
         if p.netloc != host:
             continue
-        if not _should_enqueue_link(host, p.netloc, p.path, strategy_state):
+        if not _basic_link_allowed(p.netloc, p.path, strategy_state):
             continue
         child_url = _normalize_crawl_url(f"{p.scheme}://{p.netloc}{p.path}")
-        if not _url_matches_crawl_prefix(child_url, url_prefix_norm):
+        if child_url in seen_c:
             continue
+        seen_c.add(child_url)
+        candidates_norm.append(child_url)
+
+    follow_set: set[str] | None = None
+    if settings.DEEPSEEK_API_KEY and candidates_norm:
+        picked = await _llm_select_follow_links(
+            client,
+            page_url=normalized,
+            title=title,
+            text=text,
+            candidate_urls=candidates_norm,
+            collect_rule=collect_rule,
+        )
+        if picked is not None:
+            cand_set = set(candidates_norm)
+            follow_set = set()
+            for u in picked:
+                nu = _normalize_crawl_url(u)
+                if nu in cand_set:
+                    follow_set.add(nu)
+                    continue
+                for c in candidates_norm:
+                    if nu.rstrip("/") == c.rstrip("/"):
+                        follow_set.add(c)
+                        break
+            if picked and not follow_set:
+                follow_set = None
+
+    for child_url in candidates_norm:
+        if follow_set is not None:
+            if child_url not in follow_set:
+                continue
+        else:
+            p = urlparse(child_url)
+            if not settings.DEEPSEEK_API_KEY and not _should_enqueue_link(
+                host, p.netloc, p.path, strategy_state
+            ):
+                continue
         if child_url in visited or child_url in enqueued:
             continue
         enqueued.add(child_url)
@@ -842,7 +977,6 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
 
         start = _normalize_crawl_url(project.source_url)
         host = urlparse(start).netloc
-        url_prefix_norm = _crawl_url_prefix_norm(project.crawl_url_prefix)
         q: deque[tuple[str, int, str | None]]
         visited: set[str]
         enqueued: set[str]
@@ -882,11 +1016,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
             project.crawl_processed = 0
             project.crawl_discovered = 1
             project.crawl_last_url = None
-            crawl_seed = (
-                url_prefix_norm
-                if url_prefix_norm and not _url_matches_crawl_prefix(start, url_prefix_norm)
-                else start
-            )
+            crawl_seed = start
             q = deque([(crawl_seed, 0, None)])
             visited = set()
             enqueued = {crawl_seed}
@@ -898,13 +1028,8 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
 
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
             if not can_resume:
-                strategy_seed = (
-                    url_prefix_norm
-                    if url_prefix_norm and not _url_matches_crawl_prefix(start, url_prefix_norm)
-                    else start
-                )
                 try:
-                    strategy_state = await _discover_site_strategy(client, strategy_seed, host)
+                    strategy_state = await _discover_site_strategy(client, start, host)
                 except Exception:
                     strategy_state = {"mode": "mixed"}
                 project.crawl_strategy_state = _json_copy(strategy_state)
@@ -940,14 +1065,6 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     _append_tree_node(tree_state, url=normalized, depth=depth, parent=parent_id, state="skipped")
                     continue
                 if normalized in visited or depth > depth_limit:
-                    continue
-                if not _url_matches_crawl_prefix(normalized, url_prefix_norm):
-                    _append_tree_node(
-                        tree_state, url=normalized, depth=depth, parent=parent_id, state="outside_prefix"
-                    )
-                    visited.add(normalized)
-                    project.crawl_tree_state = _json_copy(tree_state)
-                    await db.commit()
                     continue
                 visited.add(normalized)
 
@@ -1008,10 +1125,13 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     str(isinstance(ai_struct, dict)).lower(),
                 )
                 rule_active = bool(collect_rule)
-                if rule_active:
-                    include_page, rule_why = _collection_rule_ok_from_ai(
+                use_llm_persist_gate = rule_active or (
+                    bool(settings.DEEPSEEK_API_KEY) and isinstance(ai_struct, dict)
+                )
+                if use_llm_persist_gate:
+                    include_page, rule_why = _page_should_be_persisted(
                         ai_struct if isinstance(ai_struct, dict) else None,
-                        True,
+                        rule_active,
                     )
                     if not include_page:
                         logger.info(
@@ -1023,10 +1143,13 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                         _append_tree_node(
                             tree_state, url=normalized, depth=depth, parent=parent_id, state="filtered_out"
                         )
-                        _enqueue_outbound_links(
+                        await _enqueue_outbound_links(
+                            client=client,
                             normalized=normalized,
                             html=html,
                             host=host,
+                            title=title,
+                            text=text,
                             strategy_state=strategy_state,
                             depth=depth,
                             parent_for_children=parent_id,
@@ -1034,7 +1157,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                             enqueued=enqueued,
                             q=q,
                             tree_state=tree_state,
-                            url_prefix_norm=url_prefix_norm,
+                            collect_rule=collect_rule if collect_rule else None,
                         )
                         project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
                         project.crawl_tree_state = _json_copy(tree_state)
@@ -1183,10 +1306,13 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     for a in page_assets:
                         a.product_id = product.id
 
-                _enqueue_outbound_links(
+                await _enqueue_outbound_links(
+                    client=client,
                     normalized=normalized,
                     html=html,
                     host=host,
+                    title=title,
+                    text=text,
                     strategy_state=strategy_state,
                     depth=depth,
                     parent_for_children=str(page.id),
@@ -1194,7 +1320,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     enqueued=enqueued,
                     q=q,
                     tree_state=tree_state,
-                    url_prefix_norm=url_prefix_norm,
+                    collect_rule=collect_rule if collect_rule else None,
                 )
                 project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
                 project.crawl_tree_state = _json_copy(tree_state)

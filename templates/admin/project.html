@@ -33,13 +33,10 @@
   </div>
   <div class="card">
     <h3>Правило отбора при парсинге (LLM)</h3>
-    <p class="meta" style="font-size:13px;color:#4b5563;">Правило встраивается в <b>единый</b> запрос к LLM на страницу: в одном JSON приходят тип страницы (товар/контент), признак <code>collection_rule_satisfied</code>, описание, характеристики и галерея. Если правило не выполнено — страница <b>не сохраняется</b> в БД, ссылки с неё обходятся. Нужен <code>DEEPSEEK_API_KEY</code>; без ключа ответа ИИ отбор по правилу недоступен. Задайте правило до нового полного краула.</p>
+    <p class="meta" style="font-size:13px;color:#4b5563;">С <code>DEEPSEEK_API_KEY</code>: на каждой странице LLM (1) решает, <b>сохранять ли</b> её в БД (<code>should_collect</code> и при заданном тексте правила — <code>collection_rule_satisfied</code>), (2) извлекает структуру товара/контента, (3) отдельным запросом выбирает, <b>по каким исходящим ссылкам</b> продолжать обход. Без ключа — эвристики и старая стратегия по путям. Правило сбора уточняет цель для обоих шагов.</p>
     <form method="post" action="/admin/projects/{{ project.id }}/crawl-collect">
       <label>Правило (свободная формулировка)</label>
       <textarea name="crawl_collect_terms" rows="5" placeholder="Например: интересуют только автомобили (модели и комплектации), не услуги, не кредит и не СТО.">{{ project.crawl_collect_terms or '' }}</textarea>
-      <label>Ограничение по началу URL (опционально)</label>
-      <input name="crawl_url_prefix" type="url" style="width:100%;padding:8px;box-sizing:border-box;" placeholder="https://example.com/catalog-used/detail" value="{{ project.crawl_url_prefix or '' }}">
-      <p class="meta" style="font-size:12px;color:#6b7280;">Если указано, скачиваются и разбираются только страницы, чей нормализованный URL начинается с этого префикса (тот же хост и путь). Остальные URL не запрашиваются и не сохраняются. Если URL старта проекта вне префикса, обход начнётся с префикса.</p>
       <p><button class="btn" type="submit">Сохранить настройки краула</button></p>
     </form>
   </div>
