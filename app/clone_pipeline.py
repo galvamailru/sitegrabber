@@ -76,6 +76,22 @@ def _extract_links(base_url: str, html: str) -> list[str]:
     return out
 
 
+def _normalize_crawl_url(url: str) -> str:
+    u = (url or "").split("#")[0].strip()
+    if not u:
+        return u
+    p = urlparse(u)
+    scheme = p.scheme or "https"
+    netloc = p.netloc
+    path = p.path or "/"
+    if path != "/":
+        path = path.rstrip("/")
+    norm = f"{scheme}://{netloc}{path}"
+    if p.query:
+        norm += f"?{p.query}"
+    return norm
+
+
 def _is_product_like_path(path: str) -> bool:
     p = (path or "/").lower().rstrip("/") or "/"
     product_patterns = [
@@ -182,6 +198,52 @@ async def _discover_site_strategy(client: httpx.AsyncClient, start_url: str, hos
         strategy["product_url_patterns"].append(r"^/.*/detail/\d+/?$")
     strategy["service_url_patterns"] = [r"^/(about|company|contacts?|service|services|delivery|payment|news|blog)(/.*)?$"]
     strategy["samples"] = {"total": len(samples), "product_like": product_like, "service_like": service_like}
+    # Let LLM refine strategy when possible.
+    if settings.DEEPSEEK_API_KEY and samples:
+        prompt = (
+            "Определи оптимальную стратегию краулинга сайта для извлечения каталога товаров и полезных инфо-страниц.\n"
+            "Верни строго JSON вида:\n"
+            '{'
+            '"mode":"catalog-first|content-first|mixed",'
+            '"product_url_patterns":["regex1"],'
+            '"service_url_patterns":["regex1"],'
+            '"exclude_path_tokens":["/ajax/","/api/"]'
+            '}\n'
+            "Не добавляй комментариев. Не добавляй markdown.\n\n"
+            f"HOST: {host}\n"
+            f"HEURISTIC_MODE: {strategy['mode']}\n"
+            f"SAMPLES_STATS: {strategy['samples']}\n"
+            f"SAMPLES_URLS:\n" + "\n".join([f"- {path}" for path, _, _ in samples[:20]])
+        )
+        try:
+            r = await _request_with_retry(
+                client,
+                "POST",
+                f"{settings.LLM_URL.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {settings.DEEPSEEK_API_KEY}"},
+                json={
+                    "model": settings.DEEPSEEK_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0,
+                },
+                timeout=_LLM_HTTP_TIMEOUT,
+            )
+            parsed = _try_parse_json(r.json().get("choices", [{}])[0].get("message", {}).get("content", ""))
+            if isinstance(parsed, dict):
+                mode = str(parsed.get("mode", strategy["mode"]))
+                if mode in {"catalog-first", "content-first", "mixed"}:
+                    strategy["mode"] = mode
+                if isinstance(parsed.get("product_url_patterns"), list):
+                    strategy["product_url_patterns"] = [str(x) for x in parsed["product_url_patterns"][:30]]
+                if isinstance(parsed.get("service_url_patterns"), list):
+                    strategy["service_url_patterns"] = [str(x) for x in parsed["service_url_patterns"][:30]]
+                if isinstance(parsed.get("exclude_path_tokens"), list):
+                    strategy["exclude_path_tokens"] = [str(x).lower() for x in parsed["exclude_path_tokens"][:30]]
+                strategy["selector"] = "llm"
+        except Exception:
+            strategy["selector"] = "heuristic"
+    else:
+        strategy["selector"] = "heuristic"
     return strategy
 
 
@@ -675,10 +737,11 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
         if not project:
             return 0
 
-        start = project.source_url.rstrip("/")
+        start = _normalize_crawl_url(project.source_url)
         host = urlparse(start).netloc
         q: deque[tuple[str, int, str | None]]
         visited: set[str]
+        enqueued: set[str]
         tree_state: dict[str, Any]
         strategy_state: dict[str, Any]
         created = project.crawl_processed or 0
@@ -700,6 +763,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                 if i.get("url")
             )
             visited = set(project.crawl_visited_state.get("items", []))
+            enqueued = set(_normalize_crawl_url(u) for u, _, _ in q)
             tree_state = project.crawl_tree_state if isinstance(project.crawl_tree_state, dict) else {"nodes": []}
             strategy_state = project.crawl_strategy_state if isinstance(project.crawl_strategy_state, dict) else {"mode": "mixed"}
             project.crawl_status = "running"
@@ -716,6 +780,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
             project.crawl_last_url = None
             q = deque([(start, 0, None)])
             visited = set()
+            enqueued = {start}
             tree_state = {"nodes": [{"url": start, "depth": 0, "parent": None, "state": "queued"}]}
             strategy_state = {"mode": "mixed"}
             created = 0
@@ -753,7 +818,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     return created
 
                 url, depth, parent_id = q.popleft()
-                normalized = url.split("#")[0].rstrip("/")
+                normalized = _normalize_crawl_url(url)
                 pnorm = urlparse(normalized)
                 low_path = (pnorm.path or "").lower()
                 if any(seg in low_path for seg in ["/ajax/", "/api/", "/bitrix/"]):
@@ -939,7 +1004,10 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                         continue
                     if not _should_enqueue_link(host, p.netloc, p.path, strategy_state):
                         continue
-                    child_url = f"{p.scheme}://{p.netloc}{p.path}"
+                    child_url = _normalize_crawl_url(f"{p.scheme}://{p.netloc}{p.path}")
+                    if child_url in visited or child_url in enqueued:
+                        continue
+                    enqueued.add(child_url)
                     q.append((child_url, depth + 1, str(page.id)))
                     _append_tree_node(tree_state, url=child_url, depth=depth + 1, parent=str(page.id), state="queued")
                 project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
