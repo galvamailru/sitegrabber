@@ -71,9 +71,18 @@ class SiteProject(Base):
     crawl_depth: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
     with_cart: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     crawl_status: Mapped[str] = mapped_column(String(32), default="idle", nullable=False)
+    crawl_processed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    crawl_discovered: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    crawl_stop_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    crawl_publish_on_stop: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    crawl_queue_state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    crawl_visited_state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    crawl_tree_state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    crawl_last_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     rewrite_status: Mapped[str] = mapped_column(String(32), default="idle", nullable=False)
     image_status: Mapped[str] = mapped_column(String(32), default="idle", nullable=False)
     publish_status: Mapped[str] = mapped_column(String(32), default="idle", nullable=False)
+    price_check_status: Mapped[str] = mapped_column(String(32), default="idle", nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -126,6 +135,7 @@ class Product(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     slug: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     rewritten_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
     category: Mapped[str | None] = mapped_column(String(255), nullable=True)
     price_from: Mapped[float | None] = mapped_column(Float, nullable=True)
     currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
@@ -149,6 +159,19 @@ class ProductSpec(Base):
     value: Mapped[str] = mapped_column(Text, nullable=False)
     unit: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class ProductSourceSnapshot(Base):
+    __tablename__ = "product_source_snapshots"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    site_project_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    product_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    price_from: Mapped[float | None] = mapped_column(Float, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    extraction_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class Asset(Base):
@@ -231,5 +254,19 @@ class PageBlock(Base):
     block_type: Mapped[str] = mapped_column(String(64), nullable=False, default="text")
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class CatalogFilterConfig(Base):
+    __tablename__ = "catalog_filter_configs"
+    __table_args__ = (UniqueConstraint("site_project_id", "spec_key", name="uq_filter_site_spec_key"),)
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    site_project_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
+    spec_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    param_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

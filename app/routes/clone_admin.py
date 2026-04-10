@@ -1,4 +1,6 @@
 from uuid import UUID
+import re
+from collections import defaultdict
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -8,9 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.celery_app import celery
 from app.database import get_db
-from app.models import Asset, Page, PageBlock, Product, ProductSpec, SiteProject, SiteRelease
+from app.models import Asset, CatalogFilterConfig, Page, PageBlock, Product, ProductSourceSnapshot, ProductSpec, SiteProject, SiteRelease
 from app.tasks import (
+    check_prices_task,
     crawl_site_task,
+    crawl_site_resume_task,
     full_clone_pipeline_task,
     generate_images_task,
     generate_single_image_task,
@@ -20,6 +24,11 @@ from app.tasks import (
 
 router = APIRouter(tags=["clone-admin"])
 templates = Jinja2Templates(directory="templates")
+
+
+def _slugify(value: str) -> str:
+    s = re.sub(r"[^a-zA-Z0-9а-яА-ЯёЁ]+", "_", value.strip().lower(), flags=re.UNICODE)
+    return s.strip("_")[:100] or "param"
 
 
 @router.get("/admin", response_class=HTMLResponse)
@@ -58,9 +67,33 @@ async def create_project(
 
 
 @router.post("/admin/projects/{project_id}/clone")
-async def run_clone(project_id: UUID):
-    task = crawl_site_task.delay(str(project_id))
+async def run_clone(project_id: UUID, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    depth = project.crawl_depth if project else 2
+    task = crawl_site_task.delay(str(project_id), depth)
     return JSONResponse({"task_id": task.id, "status": "queued"})
+
+
+@router.post("/admin/projects/{project_id}/clone/resume")
+async def run_clone_resume(project_id: UUID, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    depth = project.crawl_depth if project else 2
+    task = crawl_site_resume_task.delay(str(project_id), depth)
+    return JSONResponse({"task_id": task.id, "status": "queued_resume"})
+
+
+@router.post("/admin/projects/{project_id}/clone/stop")
+async def stop_clone(project_id: UUID, publish_partial: bool = Form(False), db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return JSONResponse({"status": "not_found"}, status_code=404)
+    project.crawl_stop_requested = True
+    project.crawl_publish_on_stop = publish_partial
+    await db.commit()
+    if publish_partial and project.crawl_status != "running":
+        task = publish_site_task.delay(str(project_id))
+        return JSONResponse({"status": "published_partial_immediately", "task_id": task.id})
+    return JSONResponse({"status": "stop_requested", "publish_partial": publish_partial})
 
 
 @router.post("/admin/projects/{project_id}/rewrite")
@@ -81,12 +114,95 @@ async def run_publish(project_id: UUID):
     return JSONResponse({"task_id": task.id, "status": "queued"})
 
 
+@router.post("/admin/projects/{project_id}/price-check")
+async def run_price_check(project_id: UUID):
+    task = check_prices_task.delay(str(project_id))
+    return JSONResponse({"task_id": task.id, "status": "queued"})
+
+
 @router.post("/admin/projects/{project_id}/run-all")
 async def run_all(project_id: UUID, db: AsyncSession = Depends(get_db)):
     project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
     depth = project.crawl_depth if project else 2
     task = full_clone_pipeline_task.delay(str(project_id), depth)
     return JSONResponse({"task_id": task.id, "status": "queued"})
+
+
+@router.get("/admin/projects/{project_id}/filters", response_class=HTMLResponse)
+async def filters_editor(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return HTMLResponse("Project not found", status_code=404)
+    keys_rows = (
+        await db.execute(
+            select(ProductSpec.key, func.count(ProductSpec.id).label("cnt"))
+            .join(Product, Product.id == ProductSpec.product_id)
+            .where(Product.site_project_id == project_id)
+            .group_by(ProductSpec.key)
+            .order_by(func.count(ProductSpec.id).desc(), ProductSpec.key)
+        )
+    ).all()
+    existing = (
+        await db.execute(
+            select(CatalogFilterConfig).where(CatalogFilterConfig.site_project_id == project_id).order_by(CatalogFilterConfig.sort_order)
+        )
+    ).scalars().all()
+    by_key = {x.spec_key: x for x in existing}
+    key_rows = []
+    for idx, r in enumerate(keys_rows):
+        cfg = by_key.get(r.key)
+        key_rows.append(
+            {
+                "key": r.key,
+                "count": r.cnt,
+                "enabled": cfg.enabled if cfg else False,
+                "display_name": cfg.display_name if cfg else r.key,
+                "param_name": cfg.param_name if cfg else _slugify(r.key),
+                "sort_order": cfg.sort_order if cfg else idx,
+            }
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/filters.html",
+        context={"request": request, "project": project, "keys": key_rows},
+    )
+
+
+@router.post("/admin/projects/{project_id}/filters/save")
+async def save_filters(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    form = await request.form()
+    keys = form.getlist("key")
+    enabled_keys = set(form.getlist("enabled"))
+    existing = (
+        await db.execute(select(CatalogFilterConfig).where(CatalogFilterConfig.site_project_id == project_id))
+    ).scalars().all()
+    existing_by_key = {e.spec_key: e for e in existing}
+
+    order = 0
+    for k in keys:
+        display_name = str(form.get(f"display_name__{k}") or k).strip()
+        param_name = _slugify(str(form.get(f"param_name__{k}") or k))
+        enabled = k in enabled_keys
+        cfg = existing_by_key.get(k)
+        if not cfg:
+            cfg = CatalogFilterConfig(
+                site_project_id=project_id,
+                spec_key=k,
+                param_name=param_name,
+                display_name=display_name,
+                enabled=enabled,
+                sort_order=order,
+            )
+            db.add(cfg)
+        else:
+            cfg.param_name = param_name
+            cfg.display_name = display_name
+            cfg.enabled = enabled
+            cfg.sort_order = order
+        order += 1
+
+    await db.commit()
+    return RedirectResponse(f"/admin/projects/{project_id}/filters", status_code=303)
 
 
 @router.get("/admin/tasks/{task_id}")
@@ -116,9 +232,15 @@ async def project_progress(project_id: UUID, db: AsyncSession = Depends(get_db))
     return JSONResponse(
         {
             "crawl_status": project.crawl_status if project else "idle",
+            "crawl_processed": project.crawl_processed if project else 0,
+            "crawl_discovered": project.crawl_discovered if project else 0,
+            "crawl_stop_requested": project.crawl_stop_requested if project else False,
+            "crawl_last_url": project.crawl_last_url if project else None,
+            "crawl_tree_nodes": (project.crawl_tree_state or {}).get("nodes", [])[-60:] if project else [],
             "rewrite_status": project.rewrite_status if project else "idle",
             "image_status": project.image_status if project else "idle",
             "publish_status": project.publish_status if project else "idle",
+            "price_check_status": project.price_check_status if project else "idle",
             "last_error": project.last_error if project else None,
             "pages_total": pages,
             "products_total": products,
@@ -126,8 +248,106 @@ async def project_progress(project_id: UUID, db: AsyncSession = Depends(get_db))
             "assets_total": assets,
             "assets_generated": generated,
             "assets_failed": failed,
+            "crawl_progress_pct": int(((project.crawl_processed if project else 0) / max((project.crawl_discovered if project else 1), 1)) * 100),
             "rewrite_progress_pct": int((rewritten / products) * 100) if products else 0,
             "images_progress_pct": int((generated / assets) * 100) if assets else 0,
+        }
+    )
+
+
+@router.get("/admin/projects/{project_id}/crawl-tree", response_class=HTMLResponse)
+async def crawl_tree_page(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return HTMLResponse("Project not found", status_code=404)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/crawl_tree.html",
+        context={"request": request, "project": project},
+    )
+
+
+@router.get("/admin/projects/{project_id}/price-monitor", response_class=HTMLResponse)
+async def price_monitor_page(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return HTMLResponse("Project not found", status_code=404)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/price_monitor.html",
+        context={"request": request, "project": project},
+    )
+
+
+@router.get("/admin/projects/{project_id}/price-monitor/data")
+async def price_monitor_data(project_id: UUID, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return JSONResponse({"status": "not_found"}, status_code=404)
+    snapshots = (
+        await db.execute(
+            select(ProductSourceSnapshot)
+            .where(ProductSourceSnapshot.site_project_id == project_id)
+            .order_by(desc(ProductSourceSnapshot.captured_at))
+            .limit(6000)
+        )
+    ).scalars().all()
+    by_url: dict[str, list[ProductSourceSnapshot]] = defaultdict(list)
+    for snap in snapshots:
+        if not snap.source_url:
+            continue
+        if len(by_url[snap.source_url]) < 2:
+            by_url[snap.source_url].append(snap)
+    rows: list[dict] = []
+    for source_url, pair in by_url.items():
+        latest = pair[0]
+        prev = pair[1] if len(pair) > 1 else None
+        delta = None
+        delta_pct = None
+        if prev and latest.price_from is not None and prev.price_from is not None:
+            delta = round(latest.price_from - prev.price_from, 2)
+            if prev.price_from:
+                delta_pct = round((delta / prev.price_from) * 100, 2)
+        rows.append(
+            {
+                "source_url": source_url,
+                "product_name": latest.product_name,
+                "latest_price": latest.price_from,
+                "latest_currency": latest.currency or "RUB",
+                "latest_at": latest.captured_at.isoformat() if latest.captured_at else None,
+                "prev_price": prev.price_from if prev else None,
+                "prev_at": prev.captured_at.isoformat() if prev and prev.captured_at else None,
+                "delta": delta,
+                "delta_pct": delta_pct,
+            }
+        )
+    rows.sort(key=lambda x: (x["delta"] is None, -(abs(x["delta"] or 0))))
+    return JSONResponse(
+        {
+            "project_id": str(project.id),
+            "price_check_status": project.price_check_status,
+            "rows": rows,
+            "rows_total": len(rows),
+        }
+    )
+
+
+@router.get("/admin/projects/{project_id}/crawl-tree/data")
+async def crawl_tree_data(project_id: UUID, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return JSONResponse({"status": "not_found"}, status_code=404)
+    nodes = (project.crawl_tree_state or {}).get("nodes", [])
+    return JSONResponse(
+        {
+            "project_id": str(project.id),
+            "crawl_status": project.crawl_status,
+            "crawl_processed": project.crawl_processed,
+            "crawl_discovered": project.crawl_discovered,
+            "crawl_last_url": project.crawl_last_url,
+            "crawl_stop_requested": project.crawl_stop_requested,
+            "nodes_total": len(nodes),
+            "nodes": nodes,
         }
     )
 
@@ -159,6 +379,47 @@ async def project_details(project_id: UUID, request: Request, db: AsyncSession =
             .limit(20)
         )
     ).scalars().all()
+    snapshots = (
+        await db.execute(
+            select(ProductSourceSnapshot)
+            .where(ProductSourceSnapshot.site_project_id == project_id)
+            .order_by(desc(ProductSourceSnapshot.captured_at))
+            .limit(4000)
+        )
+    ).scalars().all()
+    by_url: dict[str, list[ProductSourceSnapshot]] = defaultdict(list)
+    for snap in snapshots:
+        if not snap.source_url:
+            continue
+        if len(by_url[snap.source_url]) < 2:
+            by_url[snap.source_url].append(snap)
+    price_changes: list[dict] = []
+    for source_url, pair in by_url.items():
+        latest = pair[0]
+        prev = pair[1] if len(pair) > 1 else None
+        delta = None
+        delta_pct = None
+        if prev and latest.price_from is not None and prev.price_from is not None:
+            delta = round(latest.price_from - prev.price_from, 2)
+            if prev.price_from:
+                delta_pct = round((delta / prev.price_from) * 100, 2)
+        price_changes.append(
+            {
+                "source_url": source_url,
+                "product_name": latest.product_name,
+                "latest_price": latest.price_from,
+                "latest_currency": latest.currency or "RUB",
+                "latest_at": latest.captured_at,
+                "prev_price": prev.price_from if prev else None,
+                "prev_at": prev.captured_at if prev else None,
+                "delta": delta,
+                "delta_pct": delta_pct,
+            }
+        )
+    price_changes.sort(
+        key=lambda x: (x["delta"] is None, -(abs(x["delta"] or 0))),
+    )
+    price_changes = price_changes[:100]
     return templates.TemplateResponse(
         request=request,
         name="admin/project.html",
@@ -172,6 +433,7 @@ async def project_details(project_id: UUID, request: Request, db: AsyncSession =
             "ai_pages": ai_pages or 0,
             "fallback_pages": fallback_pages or 0,
             "recent_pages": recent_pages,
+            "price_changes": price_changes,
         },
     )
 

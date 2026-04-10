@@ -14,6 +14,9 @@
 <div class="wrap">
   <a href="/admin">← Назад</a>
   <a href="/admin/projects/{{ project.id }}/cms" style="margin-left:12px;">Открыть CMS редактор</a>
+  <a href="/admin/projects/{{ project.id }}/filters" style="margin-left:12px;">Настройка фильтров каталога</a>
+  <a href="/admin/projects/{{ project.id }}/crawl-tree" style="margin-left:12px;">Live-карта обхода</a>
+  <a href="/admin/projects/{{ project.id }}/price-monitor" style="margin-left:12px;">Мониторинг цен</a>
   <h1>{{ project.name }}</h1>
   <div class="card">
     <p><b>Источник:</b> {{ project.source_url }}</p>
@@ -41,6 +44,36 @@
       </div>
     {% else %}
       <div>Нет страниц</div>
+    {% endfor %}
+  </div>
+  <div class="card">
+    <h3>Изменения цен источника</h3>
+    {% for c in price_changes %}
+      <div style="border-top:1px solid #eee;padding-top:10px;margin-top:10px;">
+        <div><b>{{ c.product_name or "Товар без имени" }}</b></div>
+        <div><small>{{ c.source_url }}</small></div>
+        <div>
+          Текущая: {{ c.latest_price if c.latest_price is not none else "n/a" }} {{ c.latest_currency }}
+          {% if c.prev_price is not none %}
+            | Предыдущая: {{ c.prev_price }} {{ c.latest_currency }}
+          {% endif %}
+        </div>
+        <div>
+          Δ:
+          {% if c.delta is none %}
+            n/a
+          {% elif c.delta > 0 %}
+            +{{ c.delta }}
+          {% else %}
+            {{ c.delta }}
+          {% endif %}
+          {% if c.delta_pct is not none %}
+            ({{ "+" if c.delta_pct > 0 else "" }}{{ c.delta_pct }}%)
+          {% endif %}
+        </div>
+      </div>
+    {% else %}
+      <div>Недостаточно данных по истории цен (нужны минимум 2 прохода парсинга).</div>
     {% endfor %}
   </div>
   <div class="card">

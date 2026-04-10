@@ -1,3 +1,5 @@
+import html
+import json
 from uuid import uuid4
 from urllib.parse import urljoin
 
@@ -8,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Asset, CartSelection, Lead, Page, PageBlock, Product, ProductSpec, SiteProject, SiteRelease
+from app.models import Asset, CartSelection, CatalogFilterConfig, Lead, Page, PageBlock, Product, ProductSpec, SiteProject, SiteRelease
 from app.storage import get_object_bytes
 
 router = APIRouter(tags=["published-site"])
@@ -37,26 +39,44 @@ async def asset_proxy(object_path: str):
     return Response(data, media_type="image/png")
 
 
-def _html_shell(title: str, body: str) -> str:
+def _html_shell(title: str, body: str, *, site_project_id: str | None = None) -> str:
+    """Оболочка витрины + всплывающий чат (дизайн и «печать» ответа как в aichatbot)."""
+    t = html.escape(title)
+    sid_js = json.dumps(str(site_project_id) if site_project_id else "")
+    chat_block = (
+        '<button type="button" id="chatbot-toggler" aria-label="Открыть чат">'
+        '<span class="material-symbols-rounded icon-chat">mode_comment</span>'
+        '<span class="material-symbols-rounded icon-close">close</span></button>'
+        '<div class="chatbot-popup">'
+        '<div class="chat-header">'
+        '<div class="header-info"><span class="logo-text">Консультант каталога</span></div>'
+        '<div class="chat-header-actions">'
+        '<a href="#" id="layout-switch" class="layout-switch" title="Переключить режим отображения">Полноэкранный</a>'
+        '<button type="button" id="close-chatbot" class="material-symbols-rounded" aria-label="Свернуть">keyboard_arrow_down</button>'
+        "</div></div>"
+        '<div class="chat-body"></div>'
+        '<div class="chat-footer">'
+        '<form class="chat-form" id="chat-form">'
+        '<div class="chat-form-wrapper">'
+        '<textarea class="message-input" placeholder="Сообщение... (не более 1000 символов)" rows="1" required></textarea>'
+        '<button type="submit" class="send-btn" aria-label="Отправить">'
+        '<span class="material-symbols-rounded" style="font-size:1.2rem;">arrow_upward</span></button></div>'
+        '<div class="error-msg" role="alert"></div></form></div></div>'
+    )
     return (
         "<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>{title}</title><style>body{{font-family:Arial,sans-serif;background:#f5f7fa;margin:0}}"
+        f"<title>{t}</title>"
+        '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" />'
+        '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@48,400,1,0" />'
+        '<link rel="stylesheet" href="/static/catalog_chat_popup.css" />'
+        "<style>body{font-family:Arial,sans-serif;background:#f5f7fa;margin:0}"
         ".wrap{max-width:1200px;margin:0 auto;padding:20px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}"
         ".card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px}.btn{display:inline-block;padding:8px 10px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;border:0}"
-        ".muted{color:#6b7280;font-size:13px}.chat-widget{position:fixed;right:16px;bottom:16px;width:320px;background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 10px 28px rgba(0,0,0,.15);padding:10px}"
-        ".chat-log{height:160px;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;padding:8px;margin-bottom:8px;background:#fafafa}</style></head><body><div class='wrap'>"
+        ".muted{color:#6b7280;font-size:13px}</style></head><body><div class='wrap'>"
         f"{body}</div>"
-        "<div class='chat-widget'><div><b>AI консультант</b></div><div id='chat-log' class='chat-log'></div><input id='chat-q' placeholder='Ваш вопрос' style='width:100%;padding:8px'><button id='chat-send' class='btn' style='margin-top:8px;width:100%'>Спросить</button></div>"
-        "<script>"
-        "window.__siteProjectId = window.__siteProjectId || '';"
-        "const logEl=document.getElementById('chat-log');"
-        "document.getElementById('chat-send').onclick=async()=>{"
-        "const q=document.getElementById('chat-q').value.trim(); if(!q||!window.__siteProjectId)return;"
-        "logEl.innerHTML += `<div><b>Вы:</b> ${q}</div>`;"
-        "const r=await fetch('/api/catalog-chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({site_project_id:window.__siteProjectId,question:q})});"
-        "const d=await r.json(); logEl.innerHTML += `<div><b>Бот:</b> ${d.answer||'Нет ответа'}</div>`; logEl.scrollTop=logEl.scrollHeight;"
-        "};"
-        "</script></body></html>"
+        f"{chat_block}"
+        f"<script>window.__SITE_PROJECT_ID__={sid_js};</script>"
+        '<script src="/static/catalog_chat_widget.js"></script></body></html>'
     )
 
 
@@ -112,7 +132,7 @@ async def cart_page(request: Request, db: AsyncSession = Depends(get_db)):
         "<button class='btn' type='submit'>Отправить менеджеру</button></form>"
         "<p><a class='btn' href='/'>Вернуться в каталог</a></p>"
     )
-    response = HTMLResponse(_html_shell("Корзина", body))
+    response = HTMLResponse(_html_shell("Корзина", body, site_project_id=str(active.site_project_id)))
     response.set_cookie("cart_session", session_id, max_age=60 * 60 * 24 * 30)
     return response
 
@@ -138,7 +158,13 @@ async def cart_send_lead(request: Request, db: AsyncSession = Depends(get_db)):
     lead_text = f"Клиент: {name}; Телефон: {phone}; Товары: {products_text}; Комментарий: {comment}"
     db.add(Lead(user_id=f"cart:{session_id}", dialog_id=str(active.site_project_id), contact_text=lead_text))
     await db.commit()
-    return HTMLResponse(_html_shell("Лид отправлен", "<h1>Спасибо!</h1><p>Менеджер свяжется с вами.</p><a class='btn' href='/'>На главную</a>"))
+    return HTMLResponse(
+        _html_shell(
+            "Лид отправлен",
+            "<h1>Спасибо!</h1><p>Менеджер свяжется с вами.</p><a class='btn' href='/'>На главную</a>",
+            site_project_id=str(active.site_project_id),
+        )
+    )
 
 
 @router.get("/{full_path:path}", response_class=HTMLResponse)
@@ -155,7 +181,54 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
         select(Page).where(Page.site_project_id == active.site_project_id, Page.url_path == path).limit(1)
     )
     if path == "/":
-        products = (await db.execute(select(Product).where(Product.site_project_id == active.site_project_id).limit(200))).scalars().all()
+        products = (await db.execute(select(Product).where(Product.site_project_id == active.site_project_id).limit(500))).scalars().all()
+        enabled_filters = (
+            await db.execute(
+                select(CatalogFilterConfig)
+                .where(CatalogFilterConfig.site_project_id == active.site_project_id, CatalogFilterConfig.enabled.is_(True))
+                .order_by(CatalogFilterConfig.sort_order, CatalogFilterConfig.display_name)
+            )
+        ).scalars().all()
+        query_map = dict(request.query_params)
+
+        product_specs_map: dict[str, dict[str, list[str]]] = {}
+        spec_rows = (
+            await db.execute(
+                select(ProductSpec.product_id, ProductSpec.key, ProductSpec.value)
+                .join(Product, Product.id == ProductSpec.product_id)
+                .where(Product.site_project_id == active.site_project_id)
+            )
+        ).all()
+        for r in spec_rows:
+            pid = str(r.product_id)
+            bucket = product_specs_map.setdefault(pid, {})
+            bucket.setdefault(r.key, []).append(r.value)
+
+        # Build filter value dictionaries from parsed specs.
+        filter_values: dict[str, list[str]] = {}
+        for f in enabled_filters:
+            vals = set()
+            for specs in product_specs_map.values():
+                for v in specs.get(f.spec_key, []):
+                    vals.add(v)
+            filter_values[f.param_name] = sorted(vals)[:500]
+
+        # Apply filters from query params.
+        filtered_products = []
+        for p in products:
+            specs = product_specs_map.get(str(p.id), {})
+            ok = True
+            for f in enabled_filters:
+                selected = query_map.get(f.param_name)
+                if not selected:
+                    continue
+                values = specs.get(f.spec_key, [])
+                if selected not in values:
+                    ok = False
+                    break
+            if ok:
+                filtered_products.append(p)
+        products = filtered_products
         content_pages = (
             await db.execute(select(Page).where(Page.site_project_id == active.site_project_id, Page.page_type != "product").limit(100))
         ).scalars().all()
@@ -171,14 +244,31 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
                 "</div>"
             )
         pages_links = "".join([f"<li><a href='{pg.url_path}'>{pg.title or pg.url_path}</a></li>" for pg in content_pages if pg.url_path != "/"])
+        filters_html = ""
+        if enabled_filters:
+            rows = []
+            for f in enabled_filters:
+                opts = "".join(
+                    [f"<option value='{v}' {'selected' if query_map.get(f.param_name)==v else ''}>{v}</option>" for v in filter_values.get(f.param_name, [])]
+                )
+                rows.append(
+                    f"<label>{f.display_name}</label><select name='{f.param_name}'><option value=''>Любое</option>{opts}</select>"
+                )
+            filters_html = (
+                "<form method='get' class='card' style='margin-bottom:16px'>"
+                + "".join(rows)
+                + "<button class='btn' type='submit' style='margin-top:10px'>Применить фильтры</button> "
+                + "<a class='btn' href='/' style='background:#6b7280'>Сбросить</a></form>"
+            )
         body = (
             f"<h1>{project.name if project else 'Каталог'}</h1>"
             "<p><a class='btn' href='/cart'>Корзина</a></p>"
+            f"{filters_html}"
             f"<div class='grid'>{''.join(cards) or '<div>Товары не найдены</div>'}</div>"
             "<h2>Инфо-страницы</h2>"
             f"<ul>{pages_links or '<li>Нет</li>'}</ul>"
         )
-        html = _html_shell("Каталог", body).replace("window.__siteProjectId = window.__siteProjectId || '';", f"window.__siteProjectId = '{active.site_project_id}';")
+        html = _html_shell("Каталог", body, site_project_id=str(active.site_project_id))
         response = HTMLResponse(html)
         response.set_cookie("cart_session", _get_session_id(request), max_age=60 * 60 * 24 * 30)
         return response
@@ -207,13 +297,13 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
                 f"<form method='post' action='/cart/add/{product.id}'><button class='btn' type='submit'>Добавить в корзину</button></form>"
                 "<p><a class='btn' href='/'>Назад в каталог</a></p>"
             )
-            html = _html_shell(product.name, body).replace("window.__siteProjectId = window.__siteProjectId || '';", f"window.__siteProjectId = '{active.site_project_id}';")
+            html = _html_shell(product.name, body, site_project_id=str(active.site_project_id))
             response = HTMLResponse(html)
             response.set_cookie("cart_session", _get_session_id(request), max_age=60 * 60 * 24 * 30)
             return response
     if page and page.page_type != "product":
         body = f"<h1>{page.title or page.url_path}</h1><p>{(page.meta_description or '')}</p><p><a class='btn' href='/'>Назад</a></p>"
-        response = HTMLResponse(_html_shell(page.title or "Страница", body))
+        response = HTMLResponse(_html_shell(page.title or "Страница", body, site_project_id=str(active.site_project_id)))
         response.set_cookie("cart_session", _get_session_id(request), max_age=60 * 60 * 24 * 30)
         return response
     if path == "/":
@@ -232,4 +322,4 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
             return Response(content=r.content, media_type=content_type, status_code=r.status_code)
         except Exception:
             pass
-    return HTMLResponse(_html_shell("404", "<h1>404</h1>"), status_code=404)
+    return HTMLResponse(_html_shell("404", "<h1>404</h1>", site_project_id=str(active.site_project_id)), status_code=404)

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Карта обхода — {{ project.name }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f5f7fa; margin: 0; color: #111; }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
+    label { font-size: 12px; color: #4b5563; display: block; margin-bottom: 4px; }
+    input, select { padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; }
+    .tree { max-height: 70vh; overflow: auto; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; white-space: pre; font-size: 12px; line-height: 1.45; }
+    .meta { font-size: 13px; color: #4b5563; }
+    .chip { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px; margin-left: 8px; }
+    .running { background: #dcfce7; color: #166534; }
+    .stopped { background: #fee2e2; color: #991b1b; }
+    .done { background: #dbeafe; color: #1e3a8a; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/admin/projects/{{ project.id }}">← Назад к проекту</a>
+  <h1>Live-карта обхода: {{ project.name }}</h1>
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>Статус</label>
+        <div id="status" class="meta">...</div>
+      </div>
+      <div>
+        <label>Макс. глубина</label>
+        <input id="depthMax" type="number" value="99" min="0" max="99">
+      </div>
+      <div>
+        <label>Статус узла</label>
+        <select id="stateFilter">
+          <option value="all">all</option>
+          <option value="queued">queued</option>
+          <option value="processing">processing</option>
+          <option value="processed">processed</option>
+          <option value="failed">failed</option>
+          <option value="skipped">skipped</option>
+        </select>
+      </div>
+      <div>
+        <label>Поиск в URL</label>
+        <input id="query" type="text" placeholder="/catalog or product">
+      </div>
+      <div>
+        <label>Лимит отображения</label>
+        <select id="limit">
+          <option value="200">200</option>
+          <option value="500" selected>500</option>
+          <option value="1000">1000</option>
+          <option value="3000">3000</option>
+        </select>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="meta" id="summary">Ожидание данных...</div>
+    <div class="tree" id="tree">Загрузка...</div>
+  </div>
+</div>
+<script>
+  const projectId = "{{ project.id }}";
+
+  function chipClass(status) {
+    if (status === "running") return "running";
+    if (status === "stopped") return "stopped";
+    return "done";
+  }
+
+  function renderNodes(payload) {
+    const tree = document.getElementById("tree");
+    const summary = document.getElementById("summary");
+    const status = document.getElementById("status");
+    const query = (document.getElementById("query").value || "").toLowerCase();
+    const maxDepth = parseInt(document.getElementById("depthMax").value || "99", 10);
+    const stateFilter = document.getElementById("stateFilter").value;
+    const limit = parseInt(document.getElementById("limit").value || "500", 10);
+
+    let nodes = Array.isArray(payload.nodes) ? payload.nodes : [];
+    if (stateFilter !== "all") nodes = nodes.filter(n => (n.state || "") === stateFilter);
+    if (!Number.isNaN(maxDepth)) nodes = nodes.filter(n => (n.depth || 0) <= maxDepth);
+    if (query) nodes = nodes.filter(n => (n.url || "").toLowerCase().includes(query));
+
+    const totalFiltered = nodes.length;
+    if (nodes.length > limit) nodes = nodes.slice(-limit);
+
+    status.innerHTML = `crawl=${payload.crawl_status || "idle"} <span class="chip ${chipClass(payload.crawl_status)}">${payload.crawl_status || "idle"}</span>`;
+    summary.textContent = `Обработано: ${payload.crawl_processed || 0}/${payload.crawl_discovered || 0} | Узлов в дереве: ${payload.nodes_total || 0} | После фильтров: ${totalFiltered} | Показано: ${nodes.length} | current=${payload.crawl_last_url || "-"}`;
+    tree.textContent = nodes
+      .map((n) => `${" ".repeat(Math.max((n.depth || 0) * 2, 0))}- [${n.state || "n/a"}] ${n.url || ""}`)
+      .join("\n") || "Нет узлов под текущие фильтры";
+  }
+
+  async function refresh() {
+    try {
+      const r = await fetch(`/admin/projects/${projectId}/crawl-tree/data`);
+      const d = await r.json();
+      renderNodes(d);
+    } catch (_) {}
+  }
+
+  ["depthMax", "stateFilter", "query", "limit"].forEach((id) => {
+    document.getElementById(id).addEventListener("input", refresh);
+    document.getElementById(id).addEventListener("change", refresh);
+  });
+
+  refresh();
+  setInterval(refresh, 2000);
+</script>
+</body>
+</html>

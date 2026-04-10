@@ -1,5 +1,6 @@
 from app.celery_app import celery
 from app.clone_pipeline import (
+    check_prices_project,
     crawl_project,
     publish_project,
     regenerate_images,
@@ -28,7 +29,30 @@ def crawl_site_task(project_id: str, depth: int = 2):
     run_async(_set_stage(project_id, "crawl_status", "running"))
     try:
         result = run_async(crawl_project(project_id, depth))
-        run_async(_set_stage(project_id, "crawl_status", "done"))
+        run_async(_finalize_crawl_stage(project_id))
+        return result
+    except Exception as e:
+        run_async(_set_stage(project_id, "crawl_status", "failed", str(e)))
+        raise
+
+
+async def _finalize_crawl_stage(project_id: str):
+    async with async_session_factory() as db:
+        project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+        if not project:
+            return
+        if project.crawl_status == "stopped":
+            return
+        project.crawl_status = "done"
+        await db.commit()
+
+
+@celery.task(name="crawl_site_resume_task")
+def crawl_site_resume_task(project_id: str, depth: int = 2):
+    run_async(_set_stage(project_id, "crawl_status", "running"))
+    try:
+        result = run_async(crawl_project(project_id, depth, resume=True))
+        run_async(_finalize_crawl_stage(project_id))
         return result
     except Exception as e:
         run_async(_set_stage(project_id, "crawl_status", "failed", str(e)))
@@ -86,3 +110,15 @@ def generate_single_image_task(asset_id: str, project_id: str):
     ok = run_async(regenerate_single_asset(asset_id))
     run_async(_set_stage(project_id, "image_status", "done" if ok else "failed"))
     return {"asset_id": asset_id, "ok": ok}
+
+
+@celery.task(name="check_prices_task")
+def check_prices_task(project_id: str):
+    run_async(_set_stage(project_id, "price_check_status", "running"))
+    try:
+        result = run_async(check_prices_project(project_id))
+        run_async(_set_stage(project_id, "price_check_status", "done"))
+        return result
+    except Exception as e:
+        run_async(_set_stage(project_id, "price_check_status", "failed", str(e)))
+        raise

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Мониторинг цен — {{ project.name }}</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f5f7fa; margin: 0; color: #111; }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 24px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    .meta { font-size: 13px; color: #4b5563; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    button { padding: 10px 14px; border: 0; border-radius: 8px; background: #7c3aed; color: #fff; cursor: pointer; }
+    input, select { padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-top: 1px solid #eee; padding: 8px; text-align: left; vertical-align: top; }
+    .pos { color: #b91c1c; }
+    .neg { color: #166534; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/admin/projects/{{ project.id }}">← Назад к проекту</a>
+  <h1>Мониторинг цен: {{ project.name }}</h1>
+  <div class="card">
+    <div class="row">
+      <button hx-post="/admin/projects/{{ project.id }}/price-check" hx-target="#task" hx-swap="innerHTML">Запустить проверку цен</button>
+      <div id="task" class="meta"></div>
+      <div class="meta" id="status">status=idle</div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <label>Фильтр:
+        <select id="mode">
+          <option value="all">Все</option>
+          <option value="changed">Только изменившиеся</option>
+          <option value="up">Только подорожавшие</option>
+          <option value="down">Только подешевевшие</option>
+        </select>
+      </label>
+      <label>Поиск:
+        <input id="query" placeholder="название или URL">
+      </label>
+    </div>
+  </div>
+  <div class="card">
+    <div class="meta" id="summary">Загрузка...</div>
+    <table>
+      <thead>
+      <tr>
+        <th>Товар</th>
+        <th>Источник</th>
+        <th>Текущая</th>
+        <th>Предыдущая</th>
+        <th>Δ</th>
+      </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</div>
+<script>
+  const projectId = "{{ project.id }}";
+  let allRows = [];
+
+  function fmt(v) { return v === null || v === undefined ? "n/a" : String(v); }
+  function cls(delta) {
+    if (delta === null || delta === undefined) return "";
+    if (delta > 0) return "pos";
+    if (delta < 0) return "neg";
+    return "";
+  }
+  function applyFilters() {
+    const mode = document.getElementById("mode").value;
+    const q = (document.getElementById("query").value || "").toLowerCase();
+    let rows = allRows.slice();
+    if (mode === "changed") rows = rows.filter(r => r.delta !== null && r.delta !== 0);
+    if (mode === "up") rows = rows.filter(r => (r.delta || 0) > 0);
+    if (mode === "down") rows = rows.filter(r => (r.delta || 0) < 0);
+    if (q) rows = rows.filter(r =>
+      (r.product_name || "").toLowerCase().includes(q) || (r.source_url || "").toLowerCase().includes(q)
+    );
+    const tbody = document.getElementById("rows");
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td>${fmt(r.product_name)}</td>
+        <td><small>${fmt(r.source_url)}</small></td>
+        <td>${fmt(r.latest_price)} ${fmt(r.latest_currency)}</td>
+        <td>${fmt(r.prev_price)} ${fmt(r.latest_currency)}</td>
+        <td class="${cls(r.delta)}">${fmt(r.delta)} ${r.delta_pct === null || r.delta_pct === undefined ? "" : `(${r.delta_pct}%)`}</td>
+      </tr>
+    `).join("") || "<tr><td colspan='5'>Нет данных под фильтры</td></tr>";
+    document.getElementById("summary").textContent = `Всего: ${allRows.length}, показано: ${rows.length}`;
+  }
+
+  async function refresh() {
+    try {
+      const r = await fetch(`/admin/projects/${projectId}/price-monitor/data`);
+      const d = await r.json();
+      allRows = Array.isArray(d.rows) ? d.rows : [];
+      document.getElementById("status").textContent = `status=${d.price_check_status || "idle"}`;
+      applyFilters();
+    } catch (_) {}
+  }
+
+  ["mode", "query"].forEach(id => {
+    document.getElementById(id).addEventListener("change", applyFilters);
+    document.getElementById(id).addEventListener("input", applyFilters);
+  });
+
+  refresh();
+  setInterval(refresh, 3000);
+</script>
+</body>
+</html>

@@ -15,6 +15,7 @@
     .progress { background:#e5e7eb; border-radius:10px; overflow:hidden; height:10px; margin-top:8px; }
     .bar { height:100%; background:#16a34a; width:0%; transition:width .3s ease; }
     .meta { font-size: 12px; color:#6b7280; margin-top:6px; }
+    .tree { max-height: 180px; overflow:auto; background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; padding:8px; font-size:12px; white-space:pre; }
   </style>
 </head>
 <body>
@@ -48,19 +49,35 @@
         <b>{{ p.name }}</b> — {{ p.source_url }}<br>
         <small>ID: {{ p.id }}</small><br><br>
         <button hx-post="/admin/projects/{{ p.id }}/clone" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Клонировать</button>
+        <button hx-post="/admin/projects/{{ p.id }}/clone/resume" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#0284c7">Возобновить</button>
+        <button hx-post="/admin/projects/{{ p.id }}/clone/stop" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#b91c1c">Стоп</button>
+        <button
+          hx-post="/admin/projects/{{ p.id }}/clone/stop"
+          hx-vals='{"publish_partial":"true"}'
+          hx-target="#task-{{ p.id }}"
+          hx-swap="innerHTML"
+          style="background:#be123c"
+        >Стоп + публикация</button>
         <button hx-post="/admin/projects/{{ p.id }}/run-all" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#0f766e">Run all</button>
         <button hx-post="/admin/projects/{{ p.id }}/rewrite" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Рерайтинг</button>
         <button hx-post="/admin/projects/{{ p.id }}/images" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Генерация изображений</button>
+        <button hx-post="/admin/projects/{{ p.id }}/price-check" hx-target="#task-{{ p.id }}" hx-swap="innerHTML" style="background:#7c3aed">Проверка цен</button>
         <button hx-post="/admin/projects/{{ p.id }}/publish" hx-target="#task-{{ p.id }}" hx-swap="innerHTML">Опубликовать</button>
         <a href="/admin/projects/{{ p.id }}">Подробнее</a>
+        <a href="/admin/projects/{{ p.id }}/crawl-tree">Live-карта</a>
+        <a href="/admin/projects/{{ p.id }}/price-monitor">Мониторинг цен</a>
         <a href="/admin/projects/{{ p.id }}/cms">CMS</a>
         <div id="task-{{ p.id }}"></div>
         <div class="meta" id="meta-{{ p.id }}">Страницы: 0 | Товары: 0 | Изображения: 0</div>
-        <div class="meta" id="stage-{{ p.id }}">Стадии: crawl=idle rewrite=idle image=idle publish=idle</div>
+        <div class="meta" id="stage-{{ p.id }}">Стадии: crawl=idle rewrite=idle image=idle publish=idle price_check=idle</div>
+        <div class="progress"><div class="bar" id="crawl-{{ p.id }}" style="background:#f59e0b"></div></div>
+        <div class="meta" id="crawlmeta-{{ p.id }}">Клонирование</div>
         <div class="progress"><div class="bar" id="rewrite-{{ p.id }}"></div></div>
         <div class="meta">Рерайтинг</div>
         <div class="progress"><div class="bar" id="images-{{ p.id }}" style="background:#2563eb"></div></div>
         <div class="meta" id="imgmeta-{{ p.id }}">Генерация изображений</div>
+        <div class="meta">Карта обхода (последние узлы)</div>
+        <div class="tree" id="tree-{{ p.id }}">Ожидание данных...</div>
       </div>
     {% else %}
       <p>Пока нет проектов.</p>
@@ -74,14 +91,24 @@
       const d = await r.json();
       const rewriteBar = document.getElementById(`rewrite-${projectId}`);
       const imagesBar = document.getElementById(`images-${projectId}`);
+      const crawlBar = document.getElementById(`crawl-${projectId}`);
       const meta = document.getElementById(`meta-${projectId}`);
       const imgmeta = document.getElementById(`imgmeta-${projectId}`);
+      const crawlmeta = document.getElementById(`crawlmeta-${projectId}`);
       const stage = document.getElementById(`stage-${projectId}`);
+      const tree = document.getElementById(`tree-${projectId}`);
+      if (crawlBar) crawlBar.style.width = `${d.crawl_progress_pct || 0}%`;
       if (rewriteBar) rewriteBar.style.width = `${d.rewrite_progress_pct || 0}%`;
       if (imagesBar) imagesBar.style.width = `${d.images_progress_pct || 0}%`;
       if (meta) meta.textContent = `Страницы: ${d.pages_total} | Товары: ${d.products_total} | Изображения: ${d.assets_total}`;
       if (imgmeta) imgmeta.textContent = `Сгенерировано: ${d.assets_generated}, ошибок: ${d.assets_failed}`;
-      if (stage) stage.textContent = `Стадии: crawl=${d.crawl_status} rewrite=${d.rewrite_status} image=${d.image_status} publish=${d.publish_status}${d.last_error ? ' | err=' + d.last_error : ''}`;
+      if (crawlmeta) crawlmeta.textContent = `Клонирование: ${d.crawl_processed || 0}/${d.crawl_discovered || 0}${d.crawl_last_url ? ' | current=' + d.crawl_last_url : ''}`;
+      if (stage) stage.textContent = `Стадии: crawl=${d.crawl_status} rewrite=${d.rewrite_status} image=${d.image_status} publish=${d.publish_status} price_check=${d.price_check_status || 'idle'}${d.crawl_stop_requested ? ' | stop requested' : ''}${d.last_error ? ' | err=' + d.last_error : ''}`;
+      if (tree && Array.isArray(d.crawl_tree_nodes)) {
+        tree.textContent = d.crawl_tree_nodes
+          .map((n) => `${' '.repeat(Math.max((n.depth || 0) * 2, 0))}- [${n.state || 'n/a'}] ${n.url || ''}`)
+          .join('\n') || 'Пока пусто';
+      }
     } catch (_) {}
   }
   const ids = [{% for p in projects %}"{{ p.id }}",{% endfor %}];

@@ -1,20 +1,23 @@
 import asyncio
 import base64
 import json
+import logging
 import re
 from collections import deque
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
 from sqlalchemy import delete, select
 
 from app.database import async_session_factory
-from app.models import Asset, Page, Product, ProductSpec, SiteProject, SiteRelease
+from app.models import Asset, Page, Product, ProductSourceSnapshot, ProductSpec, SiteProject, SiteRelease
 from app.config import get_settings
 from app.storage import upload_bytes
 
 settings = get_settings()
 _worker_loop: asyncio.AbstractEventLoop | None = None
+logger = logging.getLogger("sitegrabber.clone_pipeline")
 
 
 def _strip_tags(html: str) -> str:
@@ -58,17 +61,60 @@ def _extract_images(base_url: str, html: str) -> list[str]:
     css_links = re.findall(r'url\(([^)]+)\)', html, flags=re.IGNORECASE)
     raw_links = re.findall(r'https?://[^\s"\'<>]+', html, flags=re.IGNORECASE)
     links = [*attr_links, *css_links, *raw_links]
+    icon_noise_tokens = [
+        "/favicon",
+        "favicon",
+        "apple-touch-icon",
+        "android-chrome",
+        "/logo",
+        "logo.",
+        "/icon",
+        "icon-",
+        "sprite",
+        "/sprites",
+        "/icons/",
+        "/icon/",
+        "badge",
+        "payment",
+        "visa",
+        "mastercard",
+        "mir",
+        "paypal",
+        "social",
+        "facebook",
+        "vk",
+        "telegram",
+        "whatsapp",
+        "instagram",
+        "youtube",
+        "tiktok",
+        "arrow",
+        "chevron",
+        "close",
+        "menu",
+        "search",
+        "cart",
+        "basket",
+        "loader",
+        "spinner",
+        "placeholder",
+    ]
     for href in links:
         href = href.strip(" '\"")
         href = href.replace("&amp;", "&")
         if href.startswith("data:"):
+            continue
+        low_raw = href.lower()
+        if any(ext in low_raw for ext in [".svg", ".ico"]):
             continue
         if not any(ext in href.lower() for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"]):
             continue
         full = urljoin(base_url, href)
         # Skip obvious non-product assets.
         low = full.lower()
-        if any(skip in low for skip in ["/favicon", "reviews_", "/logo", "/icon", "sprite"]):
+        if "reviews_" in low:
+            continue
+        if any(tok in low for tok in icon_noise_tokens):
             continue
         out.append(full)
     seen = set()
@@ -79,6 +125,75 @@ def _extract_images(base_url: str, html: str) -> list[str]:
         seen.add(i)
         uniq.append(i)
     return uniq
+
+
+def _rank_product_images(page_url: str, url_path: str, candidates: list[str]) -> list[str]:
+    """
+    Heuristic ranking to prefer product photos over UI icons/badges.
+    Works purely on URL patterns to avoid extra network requests.
+    """
+    if not candidates:
+        return []
+    parsed = urlparse(page_url)
+    host = parsed.netloc.lower()
+    slug = (url_path.strip("/").split("/")[-1] or "").lower()
+    slug_tokens = [t for t in re.split(r"[^a-z0-9а-яё]+", slug) if len(t) >= 3]
+    bad = [
+        "favicon",
+        "logo",
+        "icon",
+        "sprite",
+        "badge",
+        "payment",
+        "visa",
+        "mastercard",
+        "mir",
+        "social",
+        "telegram",
+        "whatsapp",
+        "instagram",
+        "facebook",
+        "vk",
+        "youtube",
+        "tiktok",
+        "arrow",
+        "chevron",
+        "close",
+        "menu",
+        "search",
+        "cart",
+        "basket",
+        "loader",
+        "spinner",
+        "placeholder",
+    ]
+    good = ["product", "catalog", "item", "goods", "upload", "images", "img"]
+
+    scored: list[tuple[int, str]] = []
+    for u in candidates:
+        low = u.lower()
+        score = 0
+        try:
+            p = urlparse(u)
+            if p.netloc.lower() == host:
+                score += 2
+        except Exception:
+            pass
+        if any(b in low for b in bad):
+            score -= 5
+        if any(g in low for g in good):
+            score += 2
+        for t in slug_tokens[:6]:
+            if t and t in low:
+                score += 3
+        if any(x in low for x in ["-150x", "-300x", "_thumb", "thumb", "icon-"]):
+            score -= 1
+        scored.append((score, u))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    # Keep only images with some positive signal, but fallback to top few if all are weak.
+    strong = [u for s, u in scored if s >= 1]
+    return (strong or [u for _, u in scored])[:12]
 
 
 def _rewrite_html_for_local(source_url: str, html: str) -> str:
@@ -224,7 +339,17 @@ async def _extract_structured_with_llm(
     image_candidates: list[str],
 ) -> dict | None:
     if not settings.DEEPSEEK_API_KEY:
+        logger.info(
+            "ai_call_skipped purpose=extract_structured url=%s reason=no_deepseek_api_key",
+            page_url,
+        )
         return None
+    logger.info(
+        "ai_call_start purpose=extract_structured url=%s title=%s candidates=%d",
+        page_url,
+        (title or "")[:120],
+        len(image_candidates),
+    )
     prompt = (
         "Извлеки структуру страницы в JSON. Ответ строго JSON без пояснений.\n"
         "Схема:\n"
@@ -266,8 +391,22 @@ async def _extract_structured_with_llm(
         content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
         parsed = _try_parse_json(content)
         if isinstance(parsed, dict):
+            logger.info(
+                "ai_call_done purpose=extract_structured url=%s response_valid=true page_type=%s has_product=%s",
+                page_url,
+                str(parsed.get("page_type", "")),
+                "product" in parsed,
+            )
             return parsed
+        logger.warning(
+            "ai_call_done purpose=extract_structured url=%s response_valid=false parse_error=invalid_json_snippet",
+            page_url,
+        )
     except Exception:
+        logger.exception(
+            "ai_call_error purpose=extract_structured url=%s response_valid=false",
+            page_url,
+        )
         return None
     return None
 
@@ -275,6 +414,11 @@ async def _extract_structured_with_llm(
 async def _classify_page(client: httpx.AsyncClient, project: SiteProject, title: str | None, text: str) -> str:
     sample = text[:3000]
     if settings.DEEPSEEK_API_KEY:
+        logger.info(
+            "ai_call_start purpose=classify_page title=%s sample_len=%d",
+            (title or "")[:120],
+            len(sample),
+        )
         try:
             prompt = (
                 "Классифицируй страницу как product или content. "
@@ -296,46 +440,131 @@ async def _classify_page(client: httpx.AsyncClient, project: SiteProject, title:
             )
             content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "").lower()
             if "product" in content:
+                logger.info("ai_call_done purpose=classify_page response_valid=true result=product")
                 return "product"
+            logger.info("ai_call_done purpose=classify_page response_valid=true result=content")
             return "content"
         except Exception:
+            logger.exception("ai_call_error purpose=classify_page response_valid=false")
             pass
     t = (title or "").lower() + " " + sample.lower()
-    return "product" if any(x in t for x in ["радиатор", "цена", "характеристик"]) else "content"
+    result = "product" if any(x in t for x in ["радиатор", "цена", "характеристик"]) else "content"
+    logger.info("ai_call_skipped purpose=classify_page response_valid=n/a fallback_used=true result=%s", result)
+    return result
 
 
-async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
+def _extract_price_from_text(text: str) -> float | None:
+    pm = re.search(r"(?:от|От)\s+([0-9\s]+)\s*(?:₽|руб)", text)
+    if not pm:
+        pm = re.search(r"([0-9\s]{3,})\s*(?:₽|руб)", text)
+    if not pm:
+        return None
+    try:
+        return float(pm.group(1).replace(" ", ""))
+    except ValueError:
+        return None
+
+
+def _append_tree_node(tree: dict[str, Any], *, url: str, depth: int, parent: str | None, state: str) -> None:
+    nodes = tree.setdefault("nodes", [])
+    if len(nodes) >= 3000:
+        return
+    nodes.append({"url": url, "depth": depth, "parent": parent, "state": state})
+
+
+async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = False) -> int:
     async with async_session_factory() as db:
         project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
         if not project:
             return 0
 
-        await db.execute(delete(Asset).where(Asset.site_project_id == project.id))
-        await db.execute(delete(ProductSpec).where(ProductSpec.product_id.in_(select(Product.id).where(Product.site_project_id == project.id))))
-        await db.execute(delete(Product).where(Product.site_project_id == project.id))
-        await db.execute(delete(Page).where(Page.site_project_id == project.id))
-        await db.execute(delete(SiteRelease).where(SiteRelease.site_project_id == project.id))
-        await db.commit()
-
         start = project.source_url.rstrip("/")
         host = urlparse(start).netloc
-        q = deque([(start, 0, None)])
-        visited = set()
-        created = 0
+        q: deque[tuple[str, int, str | None]]
+        visited: set[str]
+        tree_state: dict[str, Any]
+        created = project.crawl_processed or 0
+
+        can_resume = (
+            resume
+            and isinstance(project.crawl_queue_state, dict)
+            and isinstance(project.crawl_visited_state, dict)
+            and (project.crawl_queue_state.get("items") or [])
+        )
+        if can_resume:
+            q = deque(
+                (
+                    str(i.get("url", "")),
+                    int(i.get("depth", 0)),
+                    str(i.get("parent_id")) if i.get("parent_id") else None,
+                )
+                for i in project.crawl_queue_state.get("items", [])
+                if i.get("url")
+            )
+            visited = set(project.crawl_visited_state.get("items", []))
+            tree_state = project.crawl_tree_state if isinstance(project.crawl_tree_state, dict) else {"nodes": []}
+            project.crawl_status = "running"
+        else:
+            await db.execute(delete(Asset).where(Asset.site_project_id == project.id))
+            await db.execute(
+                delete(ProductSpec).where(ProductSpec.product_id.in_(select(Product.id).where(Product.site_project_id == project.id)))
+            )
+            await db.execute(delete(Product).where(Product.site_project_id == project.id))
+            await db.execute(delete(Page).where(Page.site_project_id == project.id))
+            await db.execute(delete(SiteRelease).where(SiteRelease.site_project_id == project.id))
+            project.crawl_processed = 0
+            project.crawl_discovered = 1
+            project.crawl_last_url = None
+            q = deque([(start, 0, None)])
+            visited = set()
+            tree_state = {"nodes": [{"url": start, "depth": 0, "parent": None, "state": "queued"}]}
+            created = 0
+        project.crawl_stop_requested = False
+        await db.commit()
 
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
             while q:
+                project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
+                project.crawl_queue_state = {
+                    "items": [{"url": u, "depth": d, "parent_id": pid} for u, d, pid in list(q)[:1000]]
+                }
+                project.crawl_visited_state = {"items": list(visited)[:1000]}
+                project.crawl_tree_state = tree_state
+                await db.commit()
+                await db.refresh(project, attribute_names=["crawl_stop_requested", "crawl_publish_on_stop"])
+                if project.crawl_stop_requested:
+                    project.crawl_status = "stopped"
+                    await db.commit()
+                    if project.crawl_publish_on_stop:
+                        project.publish_status = "running"
+                        await db.commit()
+                        await publish_project(project_id)
+                        project.publish_status = "done"
+                        project.crawl_publish_on_stop = False
+                        await db.commit()
+                    return created
+
                 url, depth, parent_id = q.popleft()
                 normalized = url.split("#")[0].rstrip("/")
                 if normalized in visited or depth > depth_limit:
                     continue
                 visited.add(normalized)
+                project.crawl_last_url = normalized
+                _append_tree_node(
+                    tree_state,
+                    url=normalized,
+                    depth=depth,
+                    parent=parent_id,
+                    state="processing",
+                )
 
                 try:
                     resp = await client.get(normalized)
                     if resp.status_code != 200 or "text/html" not in resp.headers.get("content-type", ""):
+                        _append_tree_node(tree_state, url=normalized, depth=depth, parent=parent_id, state="skipped")
                         continue
                 except Exception:
+                    _append_tree_node(tree_state, url=normalized, depth=depth, parent=parent_id, state="failed")
                     continue
 
                 html = resp.text
@@ -358,8 +587,21 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                 )
                 extraction_source = "ai" if isinstance(ai_struct, dict) else "fallback"
                 if page_type not in {"product", "content"}:
+                    logger.warning(
+                        "page_type_invalid url=%s source=%s value=%s fallback_to_classify=true",
+                        normalized,
+                        extraction_source,
+                        page_type,
+                    )
                     page_type = await _classify_page(client, project, title, text)
                     extraction_source = "fallback"
+                logger.info(
+                    "page_extraction_result url=%s page_type=%s source=%s ai_valid=%s",
+                    normalized,
+                    page_type,
+                    extraction_source,
+                    str(isinstance(ai_struct, dict)).lower(),
+                )
                 transformed_html = _rewrite_html_for_local(start, html)
                 page = Page(
                     site_project_id=project.id,
@@ -379,6 +621,10 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                 db.add(page)
                 await db.flush()
                 created += 1
+                project.crawl_processed = created
+                _append_tree_node(tree_state, url=normalized, depth=depth, parent=parent_id, state="processed")
+                # Persist progress incrementally so UI polling sees movement.
+                await db.commit()
 
                 og_image = _extract_og_image(html)
                 if og_image:
@@ -390,7 +636,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                         if isinstance(ai_struct.get("product"), dict)
                         else []
                     )
-                image_list = gallery_from_ai or image_candidates
+                image_list = gallery_from_ai or _rank_product_images(normalized, path, image_candidates)
                 for i, image_url in enumerate(image_list):
                     db.add(
                         Asset(
@@ -410,12 +656,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                         except ValueError:
                             price = None
                     if price is None:
-                        pm = re.search(r"(?:от|От)\s+([0-9\s]+)\s*(?:₽|руб)", text)
-                        if pm:
-                            try:
-                                price = float(pm.group(1).replace(" ", ""))
-                            except ValueError:
-                                price = None
+                        price = _extract_price_from_text(text)
                     description_block = (
                         ai_product.get("description")
                         if isinstance(ai_product, dict) and ai_product.get("description")
@@ -430,6 +671,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                             if isinstance(ai_product, dict) and ai_product.get("name")
                             else (page.title or path)
                         ),
+                        source_url=normalized,
                         slug=_slug_from_path(path),
                         price_from=price,
                         currency=(
@@ -442,12 +684,30 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                     )
                     db.add(product)
                     await db.flush()
+                    db.add(
+                        ProductSourceSnapshot(
+                            site_project_id=project.id,
+                            source_url=normalized,
+                            product_name=product.name,
+                            price_from=price,
+                            currency=product.currency,
+                            extraction_source=extraction_source,
+                        )
+                    )
                     ai_specs: list[tuple[str, str]] = []
                     if isinstance(ai_product, dict) and isinstance(ai_product.get("specs"), list):
                         for s in ai_product.get("specs"):
                             if isinstance(s, dict) and s.get("key") and s.get("value"):
                                 ai_specs.append((str(s.get("key")).strip(), str(s.get("value")).strip()))
                     specs_pairs = ai_specs or _extract_specs(specs_block or text)
+                    logger.info(
+                        "product_extraction_result url=%s source=%s specs_count=%d gallery_count=%d desc_len=%d",
+                        normalized,
+                        extraction_source,
+                        len(specs_pairs),
+                        len(image_list),
+                        len((description_block or "")),
+                    )
                     for idx, (k, v) in enumerate(specs_pairs):
                         db.add(ProductSpec(product_id=product.id, key=k, value=v, sort_order=idx))
                     # Link already collected page assets to this product.
@@ -461,12 +721,74 @@ async def crawl_project(project_id: str, depth_limit: int = 2) -> int:
                     p = urlparse(link)
                     if p.netloc != host:
                         continue
-                    q.append((f"{p.scheme}://{p.netloc}{p.path}", depth + 1, page.id))
+                    child_url = f"{p.scheme}://{p.netloc}{p.path}"
+                    q.append((child_url, depth + 1, str(page.id)))
+                    _append_tree_node(tree_state, url=child_url, depth=depth + 1, parent=str(page.id), state="queued")
+                project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
+                await db.commit()
 
             release = SiteRelease(site_project_id=project.id, status="draft", is_active=False)
             db.add(release)
+            project.crawl_queue_state = None
+            project.crawl_visited_state = None
+            project.crawl_publish_on_stop = False
+            project.crawl_stop_requested = False
+            project.crawl_status = "done"
+            project.crawl_tree_state = tree_state
             await db.commit()
         return created
+
+
+async def check_prices_project(project_id: str) -> dict:
+    async with async_session_factory() as db:
+        project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+        if not project:
+            return {"checked": 0, "changed": 0}
+        products = (
+            await db.execute(
+                select(Product)
+                .where(Product.site_project_id == project.id, Product.source_url.is_not(None))
+                .order_by(Product.updated_at.desc())
+            )
+        ).scalars().all()
+        checked = 0
+        changed = 0
+        failed = 0
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            for product in products:
+                source_url = (product.source_url or "").strip()
+                if not source_url:
+                    continue
+                try:
+                    resp = await _request_with_retry(client, "GET", source_url)
+                    if resp.status_code != 200:
+                        failed += 1
+                        continue
+                    text = _strip_tags(resp.text)
+                    new_price = _extract_price_from_text(text)
+                    old_price = product.price_from
+                    db.add(
+                        ProductSourceSnapshot(
+                            site_project_id=project.id,
+                            source_url=source_url,
+                            product_name=product.name,
+                            price_from=new_price,
+                            currency=product.currency or "RUB",
+                            extraction_source="price-check",
+                        )
+                    )
+                    checked += 1
+                    if new_price is not None and old_price is not None and abs(new_price - old_price) > 0.01:
+                        changed += 1
+                        product.price_from = new_price
+                    elif new_price is not None and old_price is None:
+                        changed += 1
+                        product.price_from = new_price
+                except Exception:
+                    failed += 1
+                    continue
+            await db.commit()
+        return {"checked": checked, "changed": changed, "failed": failed}
 
 
 async def rewrite_project(project_id: str) -> int:
