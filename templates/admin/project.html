@@ -20,7 +20,9 @@
   <a href="/admin/projects/{{ project.id }}/filters" style="margin-left:12px;">Настройка фильтров каталога</a>
   <a href="/admin/projects/{{ project.id }}/crawl-tree" style="margin-left:12px;">Live-карта обхода</a>
   <a href="/admin/projects/{{ project.id }}/strategy-debug" style="margin-left:12px;">Strategy Debug</a>
+  <a href="/admin/projects/{{ project.id }}/llm-last-turn" style="margin-left:12px;">Последний LLM</a>
   <a href="/admin/projects/{{ project.id }}/price-monitor" style="margin-left:12px;">Мониторинг цен</a>
+  <a href="/admin/projects/{{ project.id }}/catalog-chats" style="margin-left:12px;">Диалоги чата</a>
   <h1>{{ project.name }}</h1>
   <div class="card">
     <p><b>Источник:</b> {{ project.source_url }}</p>
@@ -38,6 +40,15 @@
       <label>Правило (свободная формулировка)</label>
       <textarea name="crawl_collect_terms" rows="5" placeholder="Например: интересуют только автомобили (модели и комплектации), не услуги, не кредит и не СТО.">{{ project.crawl_collect_terms or '' }}</textarea>
       <p><button class="btn" type="submit">Сохранить настройки краула</button></p>
+    </form>
+  </div>
+  <div class="card">
+    <h3>Системный промпт чата витрины</h3>
+    <p class="meta" style="font-size:13px;color:#4b5563;">Используется для <code>POST /api/catalog-chat</code> (виджет на опубликованном сайте). Задайте роль, тон, правила продажи каталога и услуг. Список товаров и инфо-страниц по-прежнему передаётся в <b>сообщении пользователя</b>; к системному промпту после публикации автоматически добавляется блок из настроек фильтров каталога (<code>catalog_prompt_table</code>), если он есть.</p>
+    <form method="post" action="/admin/projects/{{ project.id }}/catalog-chat-prompt">
+      <label>Системный промпт (пусто = встроенный по умолчанию)</label>
+      <textarea name="catalog_chat_system_prompt" rows="12" placeholder="Например: Ты менеджер автосалона ГК АГАТ. Помогай подобрать авто с пробегом по переданному списку; предлагай запись на просмотр и звонок; не обещай скидки, которых нет в данных.">{{ project.catalog_chat_system_prompt or '' }}</textarea>
+      <p><button class="btn" type="submit">Сохранить промпт чата</button></p>
     </form>
   </div>
   <div class="card">

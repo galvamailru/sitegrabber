@@ -15,6 +15,21 @@
     return;
   }
 
+  function getCatalogChatUserId() {
+    var pid = window.__SITE_PROJECT_ID__ || "";
+    var key = "catalog_chat_uid_" + pid;
+    var v = localStorage.getItem(key);
+    if (!v) {
+      if (window.crypto && typeof window.crypto.randomUUID === "function") {
+        v = window.crypto.randomUUID();
+      } else {
+        v = String(Date.now()) + "-" + String(Math.random()).slice(2);
+      }
+      localStorage.setItem(key, v);
+    }
+    return v;
+  }
+
   var isFullLayout = (function () {
     var params = new URLSearchParams(window.location.search);
     var full = params.get("layout") === "full";
@@ -148,6 +163,8 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           site_project_id: window.__SITE_PROJECT_ID__,
+          user_id: getCatalogChatUserId(),
+          dialog_id: "default",
           question: text,
         }),
       });

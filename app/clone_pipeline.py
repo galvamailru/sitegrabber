@@ -3,7 +3,9 @@ import base64
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from collections import deque
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -155,7 +157,50 @@ def _classify_by_rules(url_path: str, title: str | None, text: str) -> str | Non
     return None
 
 
-async def _discover_site_strategy(client: httpx.AsyncClient, start_url: str, host: str) -> dict[str, Any]:
+_MAX_LLM_TURN_STORE_CHARS = 320_000
+
+
+def _record_last_llm_turn(
+    project: SiteProject,
+    purpose: str,
+    request: dict[str, Any],
+    response: str,
+) -> None:
+    """Один последний запрос/ответ LLM по проекту (для отладки в админке)."""
+
+    def _clip(s: str) -> str:
+        if len(s) <= _MAX_LLM_TURN_STORE_CHARS:
+            return s
+        return s[:_MAX_LLM_TURN_STORE_CHARS] + "\n\n[…обрезано по длине…]"
+
+    req = json.loads(json.dumps(request, ensure_ascii=False))
+    msgs = req.get("messages")
+    if isinstance(msgs, list):
+        for m in msgs:
+            if isinstance(m, dict):
+                c = m.get("content")
+                if isinstance(c, str):
+                    m["content"] = _clip(c)
+    project.crawl_llm_last_turn = json.loads(
+        json.dumps(
+            {
+                "purpose": purpose,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "request": req,
+                "response": _clip(response or ""),
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
+async def _discover_site_strategy(
+    client: httpx.AsyncClient,
+    start_url: str,
+    host: str,
+    *,
+    observe_project: SiteProject | None = None,
+) -> dict[str, Any]:
     strategy: dict[str, Any] = {
         "mode": "mixed",
         "product_url_patterns": [],
@@ -240,7 +285,20 @@ async def _discover_site_strategy(client: httpx.AsyncClient, start_url: str, hos
                 },
                 timeout=_LLM_HTTP_TIMEOUT,
             )
-            parsed = _try_parse_json(r.json().get("choices", [{}])[0].get("message", {}).get("content", ""))
+            raw_content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+            if observe_project:
+                _record_last_llm_turn(
+                    observe_project,
+                    "discover_strategy",
+                    {
+                        "model": settings.DEEPSEEK_MODEL,
+                        "endpoint": "chat/completions",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "context": {"host": host, "start_url": start_url},
+                    },
+                    raw_content or "",
+                )
+            parsed = _try_parse_json(raw_content)
             if isinstance(parsed, dict):
                 mode = str(parsed.get("mode", strategy["mode"]))
                 if mode in {"catalog-first", "content-first", "mixed"}:
@@ -252,7 +310,19 @@ async def _discover_site_strategy(client: httpx.AsyncClient, start_url: str, hos
                 if isinstance(parsed.get("exclude_path_tokens"), list):
                     strategy["exclude_path_tokens"] = [str(x).lower() for x in parsed["exclude_path_tokens"][:30]]
                 strategy["selector"] = "llm"
-        except Exception:
+        except Exception as e:
+            if observe_project:
+                _record_last_llm_turn(
+                    observe_project,
+                    "discover_strategy",
+                    {
+                        "model": settings.DEEPSEEK_MODEL,
+                        "endpoint": "chat/completions",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "context": {"host": host, "start_url": start_url},
+                    },
+                    f"[ошибка запроса] {type(e).__name__}: {e}",
+                )
             strategy["selector"] = "heuristic"
     else:
         strategy["selector"] = "heuristic"
@@ -267,7 +337,7 @@ async def discover_project_strategy(project_id: str) -> dict[str, Any]:
         start = project.source_url.rstrip("/")
         host = urlparse(start).netloc
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-            strategy = await _discover_site_strategy(client, start, host)
+            strategy = await _discover_site_strategy(client, start, host, observe_project=project)
         project.crawl_strategy_state = _json_copy(strategy)
         await db.commit()
         return strategy
@@ -645,6 +715,7 @@ async def _extract_structured_with_llm(
     image_candidates: list[str],
     *,
     collection_rule: str | None = None,
+    observe_project: SiteProject | None = None,
 ) -> dict | None:
     if not settings.DEEPSEEK_API_KEY:
         logger.info(
@@ -736,6 +807,18 @@ async def _extract_structured_with_llm(
             timeout=_LLM_HTTP_TIMEOUT,
         )
         content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+        if observe_project:
+            _record_last_llm_turn(
+                observe_project,
+                "extract_structured",
+                {
+                    "model": settings.DEEPSEEK_MODEL,
+                    "endpoint": "chat/completions",
+                    "page_url": page_url,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                content or "",
+            )
         parsed = _try_parse_json(content)
         if isinstance(parsed, dict):
             logger.info(
@@ -751,7 +834,22 @@ async def _extract_structured_with_llm(
             "ai_call_done purpose=extract_structured url=%s response_valid=false parse_error=invalid_json_snippet",
             page_url,
         )
-    except Exception:
+    except Exception as e:
+        if observe_project:
+            try:
+                _record_last_llm_turn(
+                    observe_project,
+                    "extract_structured",
+                    {
+                        "model": settings.DEEPSEEK_MODEL,
+                        "endpoint": "chat/completions",
+                        "page_url": page_url,
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                    f"[ошибка запроса] {type(e).__name__}: {e}",
+                )
+            except Exception:
+                pass
         logger.exception(
             "ai_call_error purpose=extract_structured url=%s response_valid=false",
             page_url,
@@ -827,6 +925,9 @@ def _json_copy(obj: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(obj, ensure_ascii=False))
 
 
+_MAX_RECENT_SUCCESS_URLS_FOR_LINK_LLM = 15
+
+
 async def _llm_select_follow_links(
     client: httpx.AsyncClient,
     *,
@@ -835,6 +936,8 @@ async def _llm_select_follow_links(
     text: str,
     candidate_urls: list[str],
     collect_rule: str | None,
+    recent_success_urls: Sequence[str] | None = None,
+    observe_project: SiteProject | None = None,
 ) -> list[str] | None:
     """LLM выбирает подмножество ссылок для обхода; None = сбой парсинга, использовать эвристику."""
     if not settings.DEEPSEEK_API_KEY or not candidate_urls:
@@ -842,6 +945,18 @@ async def _llm_select_follow_links(
     rule_line = ""
     if (collect_rule or "").strip():
         rule_line = f"ПРАВИЛО СБОРА (что нужно в итоговом каталоге/сайте):\n{collect_rule.strip()}\n\n"
+    success_line = ""
+    if recent_success_urls:
+        succ = [u.strip() for u in recent_success_urls if isinstance(u, str) and u.strip()]
+        if succ:
+            # В deque новые в конце — в промпте сначала самые свежие
+            succ = succ[::-1]
+            lines = "\n".join(f"- {u}" for u in succ[:_MAX_RECENT_SUCCESS_URLS_FOR_LINK_LLM])
+            success_line = (
+                "НЕДАВНО СОХРАНЁННЫЕ В КАТАЛОГЕ СТРАНИЦЫ (целевые для задания; отдавай предпочтение ссылкам из "
+                "CANDIDATE_LINKS с похожей структурой пути или смыслом, не выдумывай URL):\n"
+                f"{lines}\n\n"
+            )
     payload = {
         "PAGE_URL": page_url,
         "TITLE": title or "",
@@ -849,7 +964,7 @@ async def _llm_select_follow_links(
         "CANDIDATE_LINKS": candidate_urls[:80],
     }
     prompt = (
-        f"{rule_line}"
+        f"{rule_line}{success_line}"
         "Ты настраиваешь краулер. Нужно выбрать, по каким ссылкам с этой страницы продолжать обход (тот же хост).\n"
         "Верни строго один JSON без markdown и комментариев:\n"
         '{"follow":["URL1","URL2",...]}\n'
@@ -873,6 +988,19 @@ async def _llm_select_follow_links(
             timeout=_LLM_HTTP_TIMEOUT,
         )
         content = r.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+        if observe_project:
+            _record_last_llm_turn(
+                observe_project,
+                "select_follow_links",
+                {
+                    "model": settings.DEEPSEEK_MODEL,
+                    "endpoint": "chat/completions",
+                    "page_url": page_url,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "candidates_count": len(candidate_urls),
+                },
+                content or "",
+            )
         parsed = _try_parse_json(content)
         if not isinstance(parsed, dict):
             return None
@@ -890,7 +1018,23 @@ async def _llm_select_follow_links(
             len(candidate_urls),
         )
         return out
-    except Exception:
+    except Exception as e:
+        if observe_project:
+            try:
+                _record_last_llm_turn(
+                    observe_project,
+                    "select_follow_links",
+                    {
+                        "model": settings.DEEPSEEK_MODEL,
+                        "endpoint": "chat/completions",
+                        "page_url": page_url,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "candidates_count": len(candidate_urls),
+                    },
+                    f"[ошибка запроса] {type(e).__name__}: {e}",
+                )
+            except Exception:
+                pass
         logger.exception("ai_call_error purpose=select_follow_links page=%s", page_url)
         return None
 
@@ -911,6 +1055,8 @@ async def _enqueue_outbound_links(
     q: deque[tuple[str, int, str | None]],
     tree_state: dict[str, Any],
     collect_rule: str | None,
+    recent_success_urls: Sequence[str] | None = None,
+    observe_project: SiteProject | None = None,
 ) -> None:
     """Дочерние URL в очередь; при DEEPSEEK_API_KEY направление обхода задаёт LLM, иначе — стратегия/эвристики."""
     candidates_norm: list[str] = []
@@ -936,6 +1082,8 @@ async def _enqueue_outbound_links(
             text=text,
             candidate_urls=candidates_norm,
             collect_rule=collect_rule,
+            recent_success_urls=list(recent_success_urls) if recent_success_urls else None,
+            observe_project=observe_project,
         )
         if picked is not None:
             cand_set = set(candidates_norm)
@@ -1029,12 +1177,13 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
         async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
             if not can_resume:
                 try:
-                    strategy_state = await _discover_site_strategy(client, start, host)
+                    strategy_state = await _discover_site_strategy(client, start, host, observe_project=project)
                 except Exception:
                     strategy_state = {"mode": "mixed"}
                 project.crawl_strategy_state = _json_copy(strategy_state)
                 await db.commit()
             collect_rule = (project.crawl_collect_terms or "").strip()
+            recent_success_urls: deque[str] = deque(maxlen=_MAX_RECENT_SUCCESS_URLS_FOR_LINK_LLM)
             while q:
                 project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
                 project.crawl_queue_state = {
@@ -1101,6 +1250,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                         text=text,
                         image_candidates=image_candidates,
                         collection_rule=collect_rule if collect_rule else None,
+                        observe_project=project,
                     )
                 page_type = (
                     ai_struct.get("page_type", "").lower() if isinstance(ai_struct, dict) else None
@@ -1158,6 +1308,8 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                             q=q,
                             tree_state=tree_state,
                             collect_rule=collect_rule if collect_rule else None,
+                            recent_success_urls=recent_success_urls,
+                            observe_project=project,
                         )
                         project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
                         project.crawl_tree_state = _json_copy(tree_state)
@@ -1306,6 +1458,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     for a in page_assets:
                         a.product_id = product.id
 
+                recent_success_urls.append(normalized)
                 await _enqueue_outbound_links(
                     client=client,
                     normalized=normalized,
@@ -1321,6 +1474,8 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     q=q,
                     tree_state=tree_state,
                     collect_rule=collect_rule if collect_rule else None,
+                    recent_success_urls=recent_success_urls,
+                    observe_project=project,
                 )
                 project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
                 project.crawl_tree_state = _json_copy(tree_state)

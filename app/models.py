@@ -4,7 +4,7 @@
 from datetime import datetime
 from uuid import UUID as PyUUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -88,10 +88,31 @@ class SiteProject(Base):
     publish_status: Mapped[str] = mapped_column(String(32), default="idle", nullable=False)
     price_check_status: Mapped[str] = mapped_column(String(32), default="idle", nullable=False)
     catalog_prompt_table: Mapped[str | None] = mapped_column(Text, nullable=True)
+    catalog_chat_system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    crawl_llm_last_turn: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class CatalogChatMessage(Base):
+    """Сообщения чата витрины каталога: привязка к проекту, пользователю браузера и dialog_id (как в /api/chat)."""
+
+    __tablename__ = "catalog_chat_messages"
+    __table_args__ = (Index("ix_catalog_chat_proj_user_dialog", "site_project_id", "user_id", "dialog_id"),)
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    site_project_id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), ForeignKey("site_projects.id"), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    dialog_id: Mapped[str] = mapped_column(String(255), nullable=False, default="default")
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
     )
 
 

@@ -12,4 +12,6 @@ class ChatRequest(BaseModel):
 
 class CatalogChatRequest(BaseModel):
     site_project_id: str = Field(..., min_length=1)
+    user_id: str = Field(..., min_length=1, max_length=255, description="Стабильный id посетителя (например из localStorage)")
+    dialog_id: str = Field(default="default", max_length=255)
     question: str = Field(..., min_length=1, max_length=1500)

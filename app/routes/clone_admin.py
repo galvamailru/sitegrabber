@@ -1,8 +1,10 @@
 from uuid import UUID
+import json
 import re
 from collections import defaultdict
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, func, select
@@ -10,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.celery_app import celery
 from app.database import get_db
-from app.models import Asset, CatalogFilterConfig, Page, PageBlock, Product, ProductSourceSnapshot, ProductSpec, SiteProject, SiteRelease
+from app.models import Asset, CatalogChatMessage, CatalogFilterConfig, Page, PageBlock, Product, ProductSourceSnapshot, ProductSpec, SiteProject, SiteRelease
 from app.tasks import (
     check_prices_task,
     crawl_site_task,
@@ -495,6 +497,116 @@ async def update_crawl_collect_settings(
         project.crawl_collect_terms = crawl_collect_terms.strip() or None
         await db.commit()
     return RedirectResponse(f"/admin/projects/{project_id}", status_code=303)
+
+
+@router.post("/admin/projects/{project_id}/catalog-chat-prompt")
+async def update_catalog_chat_system_prompt(
+    project_id: UUID,
+    catalog_chat_system_prompt: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if project:
+        project.catalog_chat_system_prompt = catalog_chat_system_prompt.strip() or None
+        await db.commit()
+    return RedirectResponse(f"/admin/projects/{project_id}", status_code=303)
+
+
+@router.get("/admin/projects/{project_id}/catalog-chats", response_class=HTMLResponse)
+async def catalog_chats_list(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return HTMLResponse("Project not found", status_code=404)
+    result = await db.execute(
+        select(
+            CatalogChatMessage.user_id,
+            CatalogChatMessage.dialog_id,
+            func.count(CatalogChatMessage.id).label("msg_count"),
+            func.max(CatalogChatMessage.created_at).label("last_at"),
+        )
+        .where(CatalogChatMessage.site_project_id == project_id)
+        .group_by(CatalogChatMessage.user_id, CatalogChatMessage.dialog_id)
+        .order_by(desc(func.max(CatalogChatMessage.created_at)))
+        .limit(500)
+    )
+    sessions = []
+    for row in result.all():
+        uid = row.user_id
+        did = row.dialog_id
+        qs = f"user_id={quote(str(uid), safe='')}&dialog_id={quote(str(did), safe='')}"
+        sessions.append(
+            {
+                "user_id": uid,
+                "dialog_id": did,
+                "msg_count": row.msg_count,
+                "last_at": row.last_at,
+                "thread_href": f"/admin/projects/{project_id}/catalog-chats/thread?{qs}",
+            }
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/catalog_chats.html",
+        context={"request": request, "project": project, "sessions": sessions},
+    )
+
+
+@router.get("/admin/projects/{project_id}/catalog-chats/thread", response_class=HTMLResponse)
+async def catalog_chats_thread(
+    project_id: UUID,
+    request: Request,
+    user_id: str = Query(..., min_length=1, max_length=255),
+    dialog_id: str = Query("default", max_length=255),
+    db: AsyncSession = Depends(get_db),
+):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return HTMLResponse("Project not found", status_code=404)
+    messages = (
+        await db.execute(
+            select(CatalogChatMessage)
+            .where(
+                CatalogChatMessage.site_project_id == project_id,
+                CatalogChatMessage.user_id == user_id,
+                CatalogChatMessage.dialog_id == dialog_id,
+            )
+            .order_by(CatalogChatMessage.created_at.asc())
+        )
+    ).scalars().all()
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/catalog_chat_thread.html",
+        context={
+            "request": request,
+            "project": project,
+            "thread_user_id": user_id,
+            "thread_dialog_id": dialog_id,
+            "chat_messages": messages,
+        },
+    )
+
+
+@router.get("/admin/projects/{project_id}/llm-last-turn", response_class=HTMLResponse)
+async def project_llm_last_turn(project_id: UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if not project:
+        return HTMLResponse("Project not found", status_code=404)
+    raw = project.crawl_llm_last_turn
+    turn = raw if isinstance(raw, dict) else None
+    request_json = ""
+    if turn and isinstance(turn.get("request"), (dict, list)):
+        request_json = json.dumps(turn["request"], ensure_ascii=False, indent=2)
+    elif turn and turn.get("request") is not None:
+        request_json = str(turn["request"])
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/llm_last_turn.html",
+        context={
+            "request": request,
+            "project": project,
+            "turn": turn,
+            "request_json": request_json or "(пусто)",
+        },
+    )
 
 
 @router.post("/admin/assets/{asset_id}/retry")

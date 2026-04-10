@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Диалоги чата — {{ project.name }}</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f5f7fa; margin: 0; color: #111; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+    th { color: #4b5563; font-weight: 600; }
+    a { color: #2563eb; }
+    .meta { font-size: 13px; color: #6b7280; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/admin/projects/{{ project.id }}">← К проекту</a>
+  <h1>Чат витрины: {{ project.name }}</h1>
+  <p class="meta">Сессии группируются по <code>user_id</code> (браузер) и <code>dialog_id</code> (по умолчанию <code>default</code>).</p>
+  <div class="card">
+    {% if sessions %}
+    <table>
+      <thead>
+        <tr>
+          <th>user_id</th>
+          <th>dialog_id</th>
+          <th>Сообщений</th>
+          <th>Последняя активность</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in sessions %}
+        <tr>
+          <td><code style="word-break:break-all;">{{ s.user_id }}</code></td>
+          <td><code>{{ s.dialog_id }}</code></td>
+          <td>{{ s.msg_count }}</td>
+          <td>{{ s.last_at }}</td>
+          <td><a href="{{ s.thread_href }}">Открыть диалог</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="meta">Пока нет сохранённых сообщений чата каталога.</p>
+    {% endif %}
+  </div>
+</div>
+</body>
+</html>

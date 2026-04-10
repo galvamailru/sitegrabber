@@ -54,3 +54,5 @@ async def init_db() -> None:
         await conn.execute(text("ALTER TABLE site_projects ADD COLUMN IF NOT EXISTS crawl_collect_terms TEXT"))
         await conn.execute(text("ALTER TABLE site_projects ADD COLUMN IF NOT EXISTS crawl_collect_match_all BOOLEAN NOT NULL DEFAULT FALSE"))
         await conn.execute(text("ALTER TABLE site_projects ADD COLUMN IF NOT EXISTS crawl_url_prefix TEXT"))
+        await conn.execute(text("ALTER TABLE site_projects ADD COLUMN IF NOT EXISTS catalog_chat_system_prompt TEXT"))
+        await conn.execute(text("ALTER TABLE site_projects ADD COLUMN IF NOT EXISTS crawl_llm_last_turn JSONB"))
