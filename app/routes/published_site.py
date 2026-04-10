@@ -72,7 +72,9 @@ def _html_shell(title: str, body: str, *, site_project_id: str | None = None) ->
         "<style>body{font-family:Arial,sans-serif;background:#f5f7fa;margin:0}"
         ".wrap{max-width:1200px;margin:0 auto;padding:20px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}"
         ".card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:14px}.btn{display:inline-block;padding:8px 10px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;border:0}"
-        ".muted{color:#6b7280;font-size:13px}</style></head><body><div class='wrap'>"
+        ".muted{color:#6b7280;font-size:13px}.filters-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;align-items:end}"
+        ".filters-field label{display:block;font-size:12px;color:#6b7280;margin-bottom:4px}.filters-field select{width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px;background:#fff}"
+        ".filters-actions{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}</style></head><body><div class='wrap'>"
         f"{body}</div>"
         f"{chat_block}"
         f"<script>window.__SITE_PROJECT_ID__={sid_js};</script>"
@@ -248,17 +250,24 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
         if enabled_filters:
             rows = []
             for f in enabled_filters:
+                param_name = html.escape(f.param_name, quote=True)
+                display_name = html.escape(f.display_name or f.spec_key)
                 opts = "".join(
-                    [f"<option value='{v}' {'selected' if query_map.get(f.param_name)==v else ''}>{v}</option>" for v in filter_values.get(f.param_name, [])]
+                    [
+                        f"<option value='{html.escape(v, quote=True)}' {'selected' if query_map.get(f.param_name)==v else ''}>{html.escape(v)}</option>"
+                        for v in filter_values.get(f.param_name, [])
+                    ]
                 )
+                field_id = f"flt_{param_name}"
                 rows.append(
-                    f"<label>{f.display_name}</label><select name='{f.param_name}'><option value=''>Любое</option>{opts}</select>"
+                    f"<div class='filters-field'><label for='{field_id}'>{display_name}</label>"
+                    f"<select id='{field_id}' name='{param_name}'><option value=''>Любое</option>{opts}</select></div>"
                 )
             filters_html = (
-                "<form method='get' class='card' style='margin-bottom:16px'>"
+                "<form method='get' class='card filters-form' style='margin-bottom:16px'>"
                 + "".join(rows)
-                + "<button class='btn' type='submit' style='margin-top:10px'>Применить фильтры</button> "
-                + "<a class='btn' href='/' style='background:#6b7280'>Сбросить</a></form>"
+                + "<div class='filters-actions'><button class='btn' type='submit'>Применить фильтры</button> "
+                + "<a class='btn' href='/' style='background:#6b7280'>Сбросить</a></div></form>"
             )
         body = (
             f"<h1>{project.name if project else 'Каталог'}</h1>"

@@ -510,6 +510,11 @@ def _append_tree_node(tree: dict[str, Any], *, url: str, depth: int, parent: str
     nodes.append({"url": url, "depth": depth, "parent": parent, "state": state})
 
 
+def _json_copy(obj: dict[str, Any]) -> dict[str, Any]:
+    # Force a fresh JSON object so SQLAlchemy reliably persists JSONB changes.
+    return json.loads(json.dumps(obj, ensure_ascii=False))
+
+
 async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = False) -> int:
     async with async_session_factory() as db:
         project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
@@ -567,7 +572,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     "items": [{"url": u, "depth": d, "parent_id": pid} for u, d, pid in list(q)[:1000]]
                 }
                 project.crawl_visited_state = {"items": list(visited)[:1000]}
-                project.crawl_tree_state = tree_state
+                project.crawl_tree_state = _json_copy(tree_state)
                 await db.commit()
                 await db.refresh(project, attribute_names=["crawl_stop_requested", "crawl_publish_on_stop"])
                 if project.crawl_stop_requested:
@@ -763,6 +768,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     q.append((child_url, depth + 1, str(page.id)))
                     _append_tree_node(tree_state, url=child_url, depth=depth + 1, parent=str(page.id), state="queued")
                 project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
+                project.crawl_tree_state = _json_copy(tree_state)
                 await db.commit()
 
             release = SiteRelease(site_project_id=project.id, status="draft", is_active=False)
@@ -772,7 +778,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
             project.crawl_publish_on_stop = False
             project.crawl_stop_requested = False
             project.crawl_status = "done"
-            project.crawl_tree_state = tree_state
+            project.crawl_tree_state = _json_copy(tree_state)
             await db.commit()
         return created
 

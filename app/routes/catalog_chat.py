@@ -1,3 +1,6 @@
+from uuid import UUID
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +15,12 @@ router = APIRouter(prefix="/api", tags=["catalog-chat"])
 
 @router.post("/catalog-chat")
 async def catalog_chat(body: CatalogChatRequest, db: AsyncSession = Depends(get_db)):
-    project = await db.scalar(select(SiteProject).where(SiteProject.id == body.site_project_id))
+    try:
+        project_id = UUID(body.site_project_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid site_project_id")
+
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
     if not project:
         raise HTTPException(status_code=404, detail="site_project not found")
 
@@ -44,5 +52,13 @@ async def catalog_chat(body: CatalogChatRequest, db: AsyncSession = Depends(get_
         f"Инфо-страницы:\n{chr(10).join(page_context) if page_context else '- нет'}\n\n"
         f"Вопрос клиента: {body.question}"
     )
-    answer = await complete_chat(messages=[{"role": "user", "content": user_prompt}], system_prompt=system_prompt)
+    try:
+        answer = await complete_chat(messages=[{"role": "user", "content": user_prompt}], system_prompt=system_prompt)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=503 if e.response.status_code >= 500 else 502,
+            detail="Ошибка LLM при генерации ответа",
+        )
+    except Exception:
+        raise HTTPException(status_code=500, detail="Временная ошибка catalog-chat")
     return {"answer": answer}
