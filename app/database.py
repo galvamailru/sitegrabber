@@ -50,3 +50,4 @@ async def init_db() -> None:
         await conn.execute(text("ALTER TABLE site_projects ADD COLUMN IF NOT EXISTS price_check_status VARCHAR(32) NOT NULL DEFAULT 'idle'"))
         await conn.execute(text("ALTER TABLE site_projects ADD COLUMN IF NOT EXISTS catalog_prompt_table TEXT"))
         await conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS source_url TEXT"))
+        await conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS catalog_visible BOOLEAN NOT NULL DEFAULT TRUE"))

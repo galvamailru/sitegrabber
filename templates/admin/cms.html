@@ -29,6 +29,11 @@
           <label>Название (rewritten)</label><input name="rewritten_name" value="{{ p.rewritten_name or '' }}">
           <label>Цена от</label><input name="price_from" value="{{ p.price_from or '' }}">
           <label>Описание</label><textarea name="rewritten_description" rows="4">{{ p.rewritten_description or p.original_description or '' }}</textarea>
+          <label>Показывать в каталоге на сайте</label>
+          <select name="catalog_visible">
+            <option value="1" {% if p.catalog_visible %}selected{% endif %}>Да (витрина, фильтры, чат)</option>
+            <option value="0" {% if not p.catalog_visible %}selected{% endif %}>Нет (только в CMS)</option>
+          </select>
           <button class="btn" type="submit">Сохранить товар</button>
         </form>
       </details>

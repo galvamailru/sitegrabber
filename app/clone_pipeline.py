@@ -1232,8 +1232,13 @@ async def publish_project(project_id: str) -> None:
     async with async_session_factory() as db:
         project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
         if project:
-            products = (
-                await db.execute(select(Product).where(Product.site_project_id == project_id).order_by(Product.created_at.desc()).limit(500))
+            product_rows = (
+                await db.execute(
+                    select(Product)
+                    .where(Product.site_project_id == project_id)
+                    .order_by(Product.created_at.desc())
+                    .limit(500)
+                )
             ).scalars().all()
             specs_rows = (
                 await db.execute(
@@ -1247,26 +1252,64 @@ async def publish_project(project_id: str) -> None:
             for r in specs_rows:
                 pid = str(r.product_id)
                 by_product_specs.setdefault(pid, [])
-                if len(by_product_specs[pid]) < 5:
+                if len(by_product_specs[pid]) < 12:
                     by_product_specs[pid].append(f"{r.key}: {r.value}")
 
             lines = [
-                "Каталог продукции (актуальный перечень после публикации):",
-                "| Название | Slug | Цена от | Валюта | Ключевые характеристики |",
-                "|---|---|---:|---|---|",
+                "Полный каталог товаров (после публикации). Опирайся на названия, цены, описания и характеристики, а не на URL.",
+                "| Название | Категория | Цена от | Валюта | Краткое описание | Характеристики | На витрине |",
+                "| --- | --- | ---:| --- | --- | --- | --- |",
             ]
-            for p in products:
+
+            def _one_line_desc(t: str | None) -> str:
+                if not t:
+                    return "-"
+                s = re.sub(r"\s+", " ", t).strip()
+                return (s[:320] + "…") if len(s) > 320 else s
+
+            for p in product_rows:
                 specs = "; ".join(by_product_specs.get(str(p.id), [])) or "-"
+                title = (p.rewritten_name or p.name or "-").replace("|", "/")
+                desc = _one_line_desc(p.rewritten_description or p.original_description).replace("|", "/")
+                vis = "да" if p.catalog_visible else "нет"
                 lines.append(
-                    f"| {(p.rewritten_name or p.name or '-').replace('|', '/')} "
-                    f"| {(p.slug or '-').replace('|', '/')} "
+                    f"| {title} "
+                    f"| {(p.category or '-').replace('|', '/')} "
                     f"| {p.price_from if p.price_from is not None else '-'} "
                     f"| {(p.currency or 'RUB').replace('|', '/')} "
-                    f"| {specs.replace('|', '/')} |"
+                    f"| {desc} "
+                    f"| {specs.replace('|', '/')} "
+                    f"| {vis} |"
                 )
             if len(lines) == 3:
-                lines.append("| - | - | - | - | Нет товаров |")
-            project.catalog_prompt_table = "\n".join(lines)[:120000]
+                lines.append("| - | - | - | - | - | - | Нет товаров |")
+
+            svc_lines = ["", "---", "Услуги и информационные разделы (контентные страницы):", ""]
+            content_pages = (
+                await db.execute(
+                    select(Page)
+                    .where(Page.site_project_id == project_id, Page.page_type != "product")
+                    .order_by(Page.url_path)
+                    .limit(120)
+                )
+            ).scalars().all()
+            for pg in content_pages:
+                if (pg.url_path or "").strip() in ("/", ""):
+                    continue
+                snippet = (pg.meta_description or "").strip()
+                if not snippet and isinstance(pg.original_texts, dict):
+                    snippet = str(pg.original_texts.get("text") or "")[:600]
+                snippet = re.sub(r"\s+", " ", snippet).strip()
+                if len(snippet) > 400:
+                    snippet = snippet[:400] + "…"
+                if not snippet:
+                    snippet = "-"
+                head = (pg.title or pg.url_path or "раздел").replace("|", "/")
+                svc_lines.append(f"- **{head}**: {snippet.replace('|', '/')}")
+            if len(svc_lines) <= 4:
+                svc_lines.append("- (нет отдельных контентных страниц в базе)")
+
+            project.catalog_prompt_table = ("\n".join(lines + svc_lines))[:120000]
 
         releases = (await db.execute(select(SiteRelease).where(SiteRelease.site_project_id == project_id))).scalars().all()
         for r in releases:

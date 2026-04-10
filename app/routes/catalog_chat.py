@@ -1,3 +1,4 @@
+import re
 from uuid import UUID
 
 import httpx
@@ -12,6 +13,17 @@ from app.schemas import CatalogChatRequest
 
 router = APIRouter(prefix="/api", tags=["catalog-chat"])
 
+_MAX_PRODUCTS = 500
+_MAX_SPECS_PER_PRODUCT = 15
+_MAX_CONTENT_PAGES = 100
+
+
+def _short_text(t: str | None, limit: int) -> str:
+    if not t:
+        return ""
+    s = re.sub(r"\s+", " ", t).strip()
+    return (s[: limit - 1] + "…") if len(s) > limit else s
+
 
 @router.post("/catalog-chat")
 async def catalog_chat(body: CatalogChatRequest, db: AsyncSession = Depends(get_db)):
@@ -24,36 +36,73 @@ async def catalog_chat(body: CatalogChatRequest, db: AsyncSession = Depends(get_
     if not project:
         raise HTTPException(status_code=404, detail="site_project not found")
 
-    products = (await db.execute(select(Product).where(Product.site_project_id == project.id).limit(30))).scalars().all()
-    pages = (
+    products = (
         await db.execute(
-            select(Page).where(Page.site_project_id == project.id, Page.page_type != "product").limit(20)
+            select(Product).where(Product.site_project_id == project.id).order_by(Product.created_at.desc()).limit(_MAX_PRODUCTS)
         )
     ).scalars().all()
+    spec_rows = (
+        await db.execute(
+            select(ProductSpec)
+            .join(Product, Product.id == ProductSpec.product_id)
+            .where(Product.site_project_id == project.id)
+            .order_by(ProductSpec.product_id, ProductSpec.sort_order)
+        )
+    ).scalars().all()
+    specs_by_product: dict[str, list[str]] = {}
+    for s in spec_rows:
+        pid = str(s.product_id)
+        bucket = specs_by_product.setdefault(pid, [])
+        if len(bucket) >= _MAX_SPECS_PER_PRODUCT:
+            continue
+        bucket.append(f"{s.key}: {s.value}")
 
     product_context = []
     for p in products:
-        specs = (
-            await db.execute(select(ProductSpec).where(ProductSpec.product_id == p.id).order_by(ProductSpec.sort_order).limit(8))
-        ).scalars().all()
-        specs_text = "; ".join([f"{s.key}: {s.value}" for s in specs])
-        product_context.append(f"- {p.name} (slug: {p.slug or ''}, цена от: {p.price_from or 'n/a'}) {specs_text}")
+        specs_text = "; ".join(specs_by_product.get(str(p.id), [])) or "-"
+        desc = _short_text(p.rewritten_description or p.original_description, 400)
+        vis = "на витрине" if p.catalog_visible else "только в базе (не на витрине)"
+        line = (
+            f"- {p.rewritten_name or p.name} | категория: {p.category or '-'} | цена от: {p.price_from or 'n/a'} {p.currency or 'RUB'} | "
+            f"{vis} | описание: {desc or '-'} | характеристики: {specs_text}"
+        )
+        product_context.append(line)
 
-    page_context = [f"- {pg.title or pg.url_path}: {(pg.meta_description or '')[:220]}" for pg in pages]
+    pages = (
+        await db.execute(
+            select(Page)
+            .where(Page.site_project_id == project.id, Page.page_type != "product")
+            .order_by(Page.url_path)
+            .limit(_MAX_CONTENT_PAGES)
+        )
+    ).scalars().all()
+    page_context = []
+    for pg in pages:
+        if (pg.url_path or "").strip() in ("/", ""):
+            continue
+        snippet = (pg.meta_description or "").strip()
+        if not snippet and isinstance(pg.original_texts, dict):
+            snippet = str(pg.original_texts.get("text") or "")
+        snippet = _short_text(snippet, 500)
+        page_context.append(f"- {pg.title or pg.url_path}: {snippet or '-'}")
 
     catalog_table = (project.catalog_prompt_table or "").strip()
     system_prompt = (
-        "Ты консультант сайта-каталога. Отвечай только по данным контекста, не выдумывай.\n"
-        "Если вопрос о наличии/оформлении: предложи добавить товар в корзину и оставить контакты для менеджера.\n"
-        "Формат ответа: кратко, по делу, с рекомендациями по товарам.\n"
-        "Если товара нет в каталожной таблице — честно сообщи, что в текущем ассортименте его нет."
+        "Ты консультант по ассортименту и услугам. Единственный надёжный источник — переданные ниже данные: полный перечень товаров "
+        "(названия, категории, цены, описания, характеристики) и блок услуг/информационных разделов.\n"
+        "Не опирайся на URL, slug и «перейдите по ссылке»; отвечай по сути из каталога своими словами.\n"
+        "Если позиции нет в переданных списках — скажи, что в текущих данных её нет.\n"
+        "Если вопрос про оформление: можно предложить корзину и контакт менеджера.\n"
+        "Формат: кратко и по делу."
     )
     if catalog_table:
         system_prompt = f"{system_prompt}\n\n{catalog_table}"
     user_prompt = (
         f"Проект: {project.name}\n\n"
-        f"Товары (оперативный контекст):\n{chr(10).join(product_context) if product_context else '- нет'}\n\n"
-        f"Инфо-страницы:\n{chr(10).join(page_context) if page_context else '- нет'}\n\n"
+        f"Товары (полный список, до {_MAX_PRODUCTS} позиций):\n"
+        f"{chr(10).join(product_context) if product_context else '- нет'}\n\n"
+        f"Услуги и информационные страницы:\n"
+        f"{chr(10).join(page_context) if page_context else '- нет'}\n\n"
         f"Вопрос клиента: {body.question}"
     )
     try:

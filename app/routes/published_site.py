@@ -3,7 +3,7 @@ import json
 from uuid import uuid4
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -13,13 +13,26 @@ from app.storage import get_object_bytes
 router = APIRouter(tags=["published-site"])
 
 
+def _public_path_from_page(url_path: str | None) -> str:
+    p = (url_path or "").strip() or "/"
+    return p if p.startswith("/") else f"/{p}"
+
+
 @router.get("/sitemap.xml")
 async def sitemap(db: AsyncSession = Depends(get_db)):
     active = await db.scalar(select(SiteRelease).where(SiteRelease.is_active.is_(True)).order_by(SiteRelease.created_at.desc()))
     if not active:
         return Response("<urlset/>", media_type="application/xml")
-    pages = (await db.execute(select(Page).where(Page.site_project_id == active.site_project_id))).scalars().all()
-    items = "".join([f"<url><loc>{p.url_path}</loc></url>" for p in pages])
+    product_listed = exists().where(Product.page_id == Page.id, Product.catalog_visible.is_(True))
+    pages = (
+        await db.execute(
+            select(Page).where(
+                Page.site_project_id == active.site_project_id,
+                or_(Page.page_type != "product", product_listed),
+            )
+        )
+    ).scalars().all()
+    items = "".join([f"<url><loc>{html.escape(_public_path_from_page(p.url_path), quote=True)}</loc></url>" for p in pages])
     return Response(f'<?xml version="1.0" encoding="UTF-8"?><urlset>{items}</urlset>', media_type="application/xml")
 
 
@@ -90,7 +103,7 @@ async def cart_add(product_id: str, request: Request, db: AsyncSession = Depends
         return Response("No active release", status_code=400)
     session_id = _get_session_id(request)
     product = await db.scalar(select(Product).where(Product.id == product_id, Product.site_project_id == active.site_project_id))
-    if product:
+    if product and product.catalog_visible:
         exists = await db.scalar(
             select(CartSelection).where(
                 CartSelection.session_id == session_id,
@@ -178,8 +191,29 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
     page = await db.scalar(
         select(Page).where(Page.site_project_id == active.site_project_id, Page.url_path == path).limit(1)
     )
+    if page is None and path not in ("/",):
+        slug_key = path.lstrip("/")
+        if slug_key:
+            by_slug = await db.scalar(
+                select(Product).where(Product.site_project_id == active.site_project_id, Product.slug == slug_key).limit(1)
+            )
+            if by_slug:
+                page = await db.scalar(select(Page).where(Page.id == by_slug.page_id).limit(1))
     if path == "/":
-        products = (await db.execute(select(Product).where(Product.site_project_id == active.site_project_id).limit(500))).scalars().all()
+        product_page_pairs = (
+            (
+                await db.execute(
+                    select(Product, Page)
+                    .join(Page, Page.id == Product.page_id)
+                    .where(
+                        Product.site_project_id == active.site_project_id,
+                        Product.catalog_visible.is_(True),
+                    )
+                    .limit(500)
+                )
+            )
+            .all()
+        )
         enabled_filters = (
             await db.execute(
                 select(CatalogFilterConfig)
@@ -194,7 +228,7 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
             await db.execute(
                 select(ProductSpec.product_id, ProductSpec.key, ProductSpec.value)
                 .join(Product, Product.id == ProductSpec.product_id)
-                .where(Product.site_project_id == active.site_project_id)
+                .where(Product.site_project_id == active.site_project_id, Product.catalog_visible.is_(True))
             )
         ).all()
         for r in spec_rows:
@@ -212,8 +246,8 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
             filter_values[f.param_name] = sorted(vals)[:500]
 
         # Apply filters from query params.
-        filtered_products = []
-        for p in products:
+        filtered_pairs: list[tuple[Product, Page]] = []
+        for p, pg in product_page_pairs:
             specs = product_specs_map.get(str(p.id), {})
             ok = True
             for f in enabled_filters:
@@ -225,19 +259,19 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
                     ok = False
                     break
             if ok:
-                filtered_products.append(p)
-        products = filtered_products
+                filtered_pairs.append((p, pg))
         content_pages = (
             await db.execute(select(Page).where(Page.site_project_id == active.site_project_id, Page.page_type != "product").limit(100))
         ).scalars().all()
         cards = []
-        for p in products:
+        for p, pg in filtered_pairs:
+            open_href = html.escape(_public_path_from_page(pg.url_path), quote=True)
             img = await db.scalar(select(Asset).where(Asset.page_id == p.page_id, Asset.role == "main").limit(1))
             img_html = f"<img src='{img.local_url or img.source_url}' style='width:100%;height:170px;object-fit:cover;border-radius:8px'>" if img else ""
             cards.append(
                 "<div class='card'>"
                 f"{img_html}<h3>{p.name}</h3><div class='muted'>от {int(p.price_from) if p.price_from else 'n/a'} ₽</div>"
-                f"<a class='btn' href='/{p.slug or ''}'>Открыть</a> "
+                f"<a class='btn' href='{open_href}'>Открыть</a> "
                 f"<form method='post' action='/cart/add/{p.id}' style='display:inline'><button class='btn' type='submit'>В корзину</button></form>"
                 "</div>"
             )
@@ -279,6 +313,11 @@ async def published_page(full_path: str, request: Request, db: AsyncSession = De
         return response
     if page and page.page_type == "product":
         product = await db.scalar(select(Product).where(Product.page_id == page.id).limit(1))
+        if product and not product.catalog_visible:
+            return HTMLResponse(
+                _html_shell("404", "<h1>404</h1><p>Эта позиция скрыта из каталога.</p>", site_project_id=str(active.site_project_id)),
+                status_code=404,
+            )
         if product:
             specs = (
                 await db.execute(select(ProductSpec).where(ProductSpec.product_id == product.id).order_by(ProductSpec.sort_order))

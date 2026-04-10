@@ -535,6 +535,7 @@ async def update_product(
     rewritten_name: str = Form(""),
     price_from: float | None = Form(None),
     rewritten_description: str = Form(""),
+    catalog_visible: str = Form("1"),
     db: AsyncSession = Depends(get_db),
 ):
     product = await db.scalar(select(Product).where(Product.id == product_id))
@@ -543,6 +544,7 @@ async def update_product(
         product.rewritten_name = rewritten_name or None
         product.price_from = price_from
         product.rewritten_description = rewritten_description
+        product.catalog_visible = catalog_visible.strip() not in ("0", "false", "off", "no")
         await db.commit()
     return RedirectResponse(f"/admin/projects/{project_id}/cms", status_code=303)
 
