@@ -34,10 +34,43 @@ def _strip_tags(html: str) -> str:
 def _extract_links(base_url: str, html: str) -> list[str]:
     links = re.findall(r'href\s*=\s*"([^"]+)"', html, flags=re.IGNORECASE)
     out: list[str] = []
+    non_html_ext = (
+        ".js",
+        ".css",
+        ".json",
+        ".xml",
+        ".txt",
+        ".pdf",
+        ".zip",
+        ".rar",
+        ".7z",
+        ".tar",
+        ".gz",
+        ".mp4",
+        ".webm",
+        ".mp3",
+        ".wav",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".svg",
+        ".ico",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".gif",
+    )
     for href in links:
         if href.startswith("#") or href.startswith("mailto:") or href.startswith("tel:"):
             continue
-        out.append(urljoin(base_url, href))
+        full = urljoin(base_url, href)
+        p = urlparse(full)
+        low_path = (p.path or "").lower()
+        if low_path.endswith(non_html_ext):
+            continue
+        out.append(full)
     return out
 
 
@@ -554,14 +587,6 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                 if normalized in visited or depth > depth_limit:
                     continue
                 visited.add(normalized)
-                project.crawl_last_url = normalized
-                _append_tree_node(
-                    tree_state,
-                    url=normalized,
-                    depth=depth,
-                    parent=parent_id,
-                    state="processing",
-                )
 
                 try:
                     resp = await client.get(normalized)
@@ -571,6 +596,14 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                 except Exception:
                     _append_tree_node(tree_state, url=normalized, depth=depth, parent=parent_id, state="failed")
                     continue
+                project.crawl_last_url = normalized
+                _append_tree_node(
+                    tree_state,
+                    url=normalized,
+                    depth=depth,
+                    parent=parent_id,
+                    state="processing",
+                )
 
                 html = resp.text
                 path = urlparse(normalized).path or "/"

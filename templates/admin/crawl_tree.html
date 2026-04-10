@@ -11,7 +11,15 @@
     .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; }
     label { font-size: 12px; color: #4b5563; display: block; margin-bottom: 4px; }
     input, select { padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; }
-    .tree { max-height: 70vh; overflow: auto; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; white-space: pre; font-size: 12px; line-height: 1.45; }
+    .tree { max-height: 70vh; overflow: auto; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; font-size: 12px; line-height: 1.45; }
+    .tree-node { margin: 2px 0; padding: 2px 6px; border-radius: 6px; }
+    .tree-node a { color: #1f2937; text-decoration: none; }
+    .tree-node a:hover { text-decoration: underline; }
+    .s-queued { background: #eef2ff; }
+    .s-processing { background: #fff7ed; }
+    .s-processed { background: #ecfdf5; }
+    .s-failed { background: #fef2f2; }
+    .s-skipped { background: #f3f4f6; }
     .meta { font-size: 13px; color: #4b5563; }
     .chip { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px; margin-left: 8px; }
     .running { background: #dcfce7; color: #166534; }
@@ -92,9 +100,17 @@
 
     status.innerHTML = `crawl=${payload.crawl_status || "idle"} <span class="chip ${chipClass(payload.crawl_status)}">${payload.crawl_status || "idle"}</span>`;
     summary.textContent = `Обработано: ${payload.crawl_processed || 0}/${payload.crawl_discovered || 0} | Узлов в дереве: ${payload.nodes_total || 0} | После фильтров: ${totalFiltered} | Показано: ${nodes.length} | current=${payload.crawl_last_url || "-"}`;
-    tree.textContent = nodes
-      .map((n) => `${" ".repeat(Math.max((n.depth || 0) * 2, 0))}- [${n.state || "n/a"}] ${n.url || ""}`)
-      .join("\n") || "Нет узлов под текущие фильтры";
+    if (!nodes.length) {
+      tree.textContent = "Нет узлов под текущие фильтры";
+      return;
+    }
+
+    tree.innerHTML = nodes.map((n) => {
+      const depth = Math.max((n.depth || 0), 0);
+      const state = (n.state || "n/a");
+      const safeUrl = String(n.url || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return `<div class="tree-node s-${state}" style="margin-left:${depth * 18}px"><b>[${state}]</b> <a href="${safeUrl}" target="_blank" rel="noopener">${safeUrl}</a></div>`;
+    }).join("");
   }
 
   async function refresh() {
