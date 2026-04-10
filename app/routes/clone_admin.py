@@ -47,6 +47,7 @@ async def create_project(
     source_url: str = Form(...),
     name: str = Form(...),
     crawl_depth: int = Form(2),
+    crawl_collect_terms: str = Form(""),
     design_prompt: str = Form(""),
     image_prompt_global: str = Form(""),
     tone_of_voice: str = Form(""),
@@ -57,6 +58,7 @@ async def create_project(
         source_url=source_url.strip(),
         name=name.strip(),
         crawl_depth=crawl_depth,
+        crawl_collect_terms=crawl_collect_terms.strip() or None,
         design_prompt=design_prompt.strip() or None,
         image_prompt_global=image_prompt_global.strip() or None,
         tone_of_voice=tone_of_voice.strip() or None,
@@ -480,6 +482,19 @@ async def project_details(project_id: UUID, request: Request, db: AsyncSession =
             "price_changes": price_changes,
         },
     )
+
+
+@router.post("/admin/projects/{project_id}/crawl-collect")
+async def update_crawl_collect_settings(
+    project_id: UUID,
+    crawl_collect_terms: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+):
+    project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
+    if project:
+        project.crawl_collect_terms = crawl_collect_terms.strip() or None
+        await db.commit()
+    return RedirectResponse(f"/admin/projects/{project_id}", status_code=303)
 
 
 @router.post("/admin/assets/{asset_id}/retry")

@@ -582,6 +582,28 @@ def _try_parse_json(text: str) -> dict | None:
         return None
 
 
+def _collection_rule_ok_from_ai(ai_struct: dict | None, rule_active: bool) -> tuple[bool, str]:
+    """Если правило задано и есть ответ ИИ — читаем collection_rule_satisfied; иначе пропускаем страницу."""
+    if not rule_active:
+        return True, ""
+    if not isinstance(ai_struct, dict):
+        return True, "no_ai_response"
+    raw = ai_struct.get("collection_rule_satisfied")
+    reason = str(ai_struct.get("collection_rule_reason") or ai_struct.get("rule_reason") or "")[:400]
+    if raw is None:
+        logger.warning("collection_rule_satisfied missing when rule active; excluding page")
+        return False, "missing_satisfied_flag"
+    if isinstance(raw, bool):
+        ok = raw
+    elif isinstance(raw, str):
+        ok = raw.strip().lower() in ("true", "1", "yes")
+    elif isinstance(raw, (int, float)):
+        ok = raw != 0
+    else:
+        ok = False
+    return ok, reason
+
+
 async def _extract_structured_with_llm(
     client: httpx.AsyncClient,
     project: SiteProject,
@@ -589,6 +611,8 @@ async def _extract_structured_with_llm(
     title: str | None,
     text: str,
     image_candidates: list[str],
+    *,
+    collection_rule: str | None = None,
 ) -> dict | None:
     if not settings.DEEPSEEK_API_KEY:
         logger.info(
@@ -597,35 +621,63 @@ async def _extract_structured_with_llm(
         )
         return None
     logger.info(
-        "ai_call_start purpose=extract_structured url=%s title=%s candidates=%d",
+        "ai_call_start purpose=extract_structured url=%s title=%s candidates=%d has_rule=%s",
         page_url,
         (title or "")[:120],
         len(image_candidates),
+        str(bool((collection_rule or "").strip())).lower(),
     )
+    rule_text = (collection_rule or "").strip()
+    if rule_text:
+        rule_section = (
+            "ПРАВИЛО ОТБОРА (что владелец хочет собирать в каталог CMS):\n"
+            f"{rule_text}\n\n"
+            "В JSON обязательно поля:\n"
+            '- "collection_rule_satisfied": true или false — подходит ли эта страница под правило.\n'
+            '- "collection_rule_reason": кратко по-русски почему.\n'
+            "Как оценивать satisfied:\n"
+            "- page_type=product: true только если основной предмет — товар/позиция каталога по правилу "
+            "(например радиатор как изделие, автомобиль как модель). Услуги СТО, кредит, страхование, "
+            "запись на сервис без карточки товара по теме — false.\n"
+            "- page_type=content: true только если страница по смыслу относится к правилу (обзор линейки, каталог раздела). "
+            "Контакты, о компании, вакансии, новости офтоп — false.\n"
+            "- При сомнении — false.\n"
+            "Даже если satisfied=false, заполни product или content_page по фактическому содержанию страницы (для трассировки).\n\n"
+        )
+    else:
+        rule_section = (
+            "Правило отбора не задано: всегда укажи "
+            '"collection_rule_satisfied": true и "collection_rule_reason": "правило не задано".\n\n'
+        )
+
     prompt = (
-        "Извлеки структуру страницы в JSON. Ответ строго JSON без пояснений.\n"
-        "Схема:\n"
+        "Проанализируй HTML-текст страницы и верни один JSON-объект без пояснений до или после него.\n\n"
+        f"{rule_section}"
+        "Схема JSON:\n"
         "{\n"
-        '  "page_type":"product|content",\n'
-        '  "page_title":"...",\n'
-        '  "meta_description":"...",\n'
-        '  "product":{\n'
-        '    "name":"...",\n'
-        '    "price_from":7410,\n'
-        '    "currency":"RUB",\n'
-        '    "description":"полное описание товара",\n'
-        '    "specs":[{"key":"Ширина","value":"от 80 мм до 2500 мм"}],\n'
-        '    "gallery":["url1","url2"]\n'
+        '  "page_type": "product" | "content",\n'
+        '  "collection_rule_satisfied": true,\n'
+        '  "collection_rule_reason": "...",\n'
+        '  "page_title": "лучший заголовок страницы",\n'
+        '  "meta_description": "краткое описание для meta",\n'
+        '  "product": {\n'
+        '    "name": "...",\n'
+        '    "price_from": 7410,\n'
+        '    "currency": "RUB",\n'
+        '    "description": "полное описание товара",\n'
+        '    "specs": [{"key": "Ширина", "value": "от 80 мм до 2500 мм"}],\n'
+        '    "gallery": ["абсолютный или относительный URL изображения товара", "..."]\n'
         "  },\n"
-        '  "content_page":{"category":"contacts|news|about|other","summary":"..."}\n'
-        "}\n"
-        "Правила:\n"
-        "- Если страница товарная, page_type=product и заполни product.\n"
-        "- Если страница контентная, page_type=content и заполни content_page.\n"
-        "- specs только реальные технические параметры, без навигации/контактов.\n"
-        "- gallery заполни только ссылками на изображения товара.\n\n"
-        f"URL: {page_url}\nTITLE: {title or ''}\n"
-        f"IMAGE_CANDIDATES: {image_candidates[:40]}\n"
+        '  "content_page": {"category": "contacts|news|about|other", "summary": "..."}\n'
+        "}\n\n"
+        "Правила заполнения:\n"
+        "- Если товарная карточка: page_type=product, заполни product; content_page можно оставить пустым или минимальным.\n"
+        "- Если информационная: page_type=content, заполни content_page; product оставь пустым или {}.\n"
+        "- specs — только реальные параметры товара, без меню и контактов.\n"
+        "- gallery — только URL изображений товара; по возможности выбирай из IMAGE_CANDIDATES подходящие.\n"
+        "- price_from число или null, если цены нет.\n\n"
+        f"URL: {page_url}\nTITLE (из HTML): {title or ''}\n"
+        f"IMAGE_CANDIDATES (до 40): {image_candidates[:40]}\n"
         f"TEXT:\n{text[:10000]}"
     )
     try:
@@ -645,10 +697,11 @@ async def _extract_structured_with_llm(
         parsed = _try_parse_json(content)
         if isinstance(parsed, dict):
             logger.info(
-                "ai_call_done purpose=extract_structured url=%s response_valid=true page_type=%s has_product=%s",
+                "ai_call_done purpose=extract_structured url=%s page_type=%s satisfied=%s reason=%r",
                 page_url,
                 str(parsed.get("page_type", "")),
-                "product" in parsed,
+                str(parsed.get("collection_rule_satisfied", "")),
+                str(parsed.get("collection_rule_reason", ""))[:200],
             )
             return parsed
         logger.warning(
@@ -731,6 +784,34 @@ def _json_copy(obj: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(obj, ensure_ascii=False))
 
 
+def _enqueue_outbound_links(
+    *,
+    normalized: str,
+    html: str,
+    host: str,
+    strategy_state: dict[str, Any],
+    depth: int,
+    parent_for_children: str | None,
+    visited: set[str],
+    enqueued: set[str],
+    q: deque[tuple[str, int, str | None]],
+    tree_state: dict[str, Any],
+) -> None:
+    """Дочерние URL в очередь; parent_for_children — id последней **сохранённой** страницы (или None)."""
+    for link in _extract_links(normalized, html):
+        p = urlparse(link)
+        if p.netloc != host:
+            continue
+        if not _should_enqueue_link(host, p.netloc, p.path, strategy_state):
+            continue
+        child_url = _normalize_crawl_url(f"{p.scheme}://{p.netloc}{p.path}")
+        if child_url in visited or child_url in enqueued:
+            continue
+        enqueued.add(child_url)
+        q.append((child_url, depth + 1, parent_for_children))
+        _append_tree_node(tree_state, url=child_url, depth=depth + 1, parent=parent_for_children, state="queued")
+
+
 async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = False) -> int:
     async with async_session_factory() as db:
         project = await db.scalar(select(SiteProject).where(SiteProject.id == project_id))
@@ -795,6 +876,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     strategy_state = {"mode": "mixed"}
                 project.crawl_strategy_state = _json_copy(strategy_state)
                 await db.commit()
+            collect_rule = (project.crawl_collect_terms or "").strip()
             while q:
                 project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
                 project.crawl_queue_state = {
@@ -860,6 +942,7 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                         title=title,
                         text=text,
                         image_candidates=image_candidates,
+                        collection_rule=collect_rule if collect_rule else None,
                     )
                 page_type = (
                     ai_struct.get("page_type", "").lower() if isinstance(ai_struct, dict) else None
@@ -883,6 +966,54 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     extraction_source,
                     str(isinstance(ai_struct, dict)).lower(),
                 )
+                rule_active = bool(collect_rule)
+                if rule_active:
+                    include_page, rule_why = _collection_rule_ok_from_ai(
+                        ai_struct if isinstance(ai_struct, dict) else None,
+                        True,
+                    )
+                    if not include_page:
+                        logger.info(
+                            "crawl_collect_skip phase=unified_llm url=%s page_type=%s detail=%r",
+                            normalized,
+                            page_type,
+                            rule_why,
+                        )
+                        _append_tree_node(
+                            tree_state, url=normalized, depth=depth, parent=parent_id, state="filtered_out"
+                        )
+                        _enqueue_outbound_links(
+                            normalized=normalized,
+                            html=html,
+                            host=host,
+                            strategy_state=strategy_state,
+                            depth=depth,
+                            parent_for_children=parent_id,
+                            visited=visited,
+                            enqueued=enqueued,
+                            q=q,
+                            tree_state=tree_state,
+                        )
+                        project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
+                        project.crawl_tree_state = _json_copy(tree_state)
+                        await db.commit()
+                        continue
+
+                page_title_resolved = title
+                meta_resolved = _extract_description(html) or ""
+                if isinstance(ai_struct, dict):
+                    pt = ai_struct.get("page_title")
+                    if isinstance(pt, str) and pt.strip():
+                        page_title_resolved = pt.strip()
+                    md = ai_struct.get("meta_description")
+                    if isinstance(md, str) and md.strip():
+                        meta_resolved = md.strip()
+                    if page_type == "content":
+                        cp = ai_struct.get("content_page") if isinstance(ai_struct.get("content_page"), dict) else {}
+                        summ = cp.get("summary")
+                        if isinstance(summ, str) and summ.strip() and len(meta_resolved.strip()) < 40:
+                            meta_resolved = summ.strip()[:800]
+
                 transformed_html = _rewrite_html_for_local(start, html)
                 page = Page(
                     site_project_id=project.id,
@@ -890,8 +1021,8 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     url_path=path,
                     full_url=normalized,
                     depth=depth,
-                    title=title,
-                    meta_description=_extract_description(html),
+                    title=page_title_resolved,
+                    meta_description=meta_resolved or None,
                     original_html=html,
                     transformed_html=transformed_html,
                     original_texts={"text": text[:6000]},
@@ -910,14 +1041,26 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                 og_image = _extract_og_image(html)
                 if og_image:
                     db.add(Asset(site_project_id=project.id, page_id=page.id, role="main", source_url=og_image))
-                gallery_from_ai = []
+                gallery_from_ai: list[Any] = []
                 if isinstance(ai_struct, dict):
-                    gallery_from_ai = (
-                        (ai_struct.get("product") or {}).get("gallery") or []
-                        if isinstance(ai_struct.get("product"), dict)
-                        else []
-                    )
-                image_list = gallery_from_ai or _rank_product_images(normalized, path, image_candidates)
+                    pr = ai_struct.get("product") if isinstance(ai_struct.get("product"), dict) else {}
+                    g = pr.get("gallery")
+                    if isinstance(g, list):
+                        gallery_from_ai = g
+                abs_gallery: list[str] = []
+                for u in gallery_from_ai:
+                    if not isinstance(u, str):
+                        continue
+                    s = u.strip()
+                    if not s:
+                        continue
+                    if s.startswith("//"):
+                        abs_gallery.append(f"{urlparse(normalized).scheme}:{s}")
+                    elif s.startswith("http://") or s.startswith("https://"):
+                        abs_gallery.append(s)
+                    else:
+                        abs_gallery.append(urljoin(normalized, s))
+                image_list = abs_gallery or _rank_product_images(normalized, path, image_candidates)
                 for i, image_url in enumerate(image_list):
                     db.add(
                         Asset(
@@ -998,18 +1141,18 @@ async def crawl_project(project_id: str, depth_limit: int = 2, resume: bool = Fa
                     for a in page_assets:
                         a.product_id = product.id
 
-                for link in _extract_links(normalized, html):
-                    p = urlparse(link)
-                    if p.netloc != host:
-                        continue
-                    if not _should_enqueue_link(host, p.netloc, p.path, strategy_state):
-                        continue
-                    child_url = _normalize_crawl_url(f"{p.scheme}://{p.netloc}{p.path}")
-                    if child_url in visited or child_url in enqueued:
-                        continue
-                    enqueued.add(child_url)
-                    q.append((child_url, depth + 1, str(page.id)))
-                    _append_tree_node(tree_state, url=child_url, depth=depth + 1, parent=str(page.id), state="queued")
+                _enqueue_outbound_links(
+                    normalized=normalized,
+                    html=html,
+                    host=host,
+                    strategy_state=strategy_state,
+                    depth=depth,
+                    parent_for_children=str(page.id),
+                    visited=visited,
+                    enqueued=enqueued,
+                    q=q,
+                    tree_state=tree_state,
+                )
                 project.crawl_discovered = max(project.crawl_discovered, len(visited) + len(q))
                 project.crawl_tree_state = _json_copy(tree_state)
                 await db.commit()
